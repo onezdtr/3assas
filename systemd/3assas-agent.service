@@ -1,0 +1,14 @@
+[Unit]
+Description=3assas agent (alerts, AI verdicts, evening report, web page on 127.0.0.1:4545)
+After=3assas.service network-online.target
+Wants=network-online.target
+
+[Service]
+User=@USER@
+ExecStart=/usr/bin/python3 @DIR@/agent/agent.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

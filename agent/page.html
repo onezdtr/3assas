@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3assas</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #ffffff; --line: #ececea; --text: #18181b; --muted: #52525b; --faint: #6b6b74;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --hover: #f5f5f4;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0b0b0c; --panel: #121214; --line: #222226; --text: #ededef; --muted: #a1a1aa; --faint: #8a8a93;
+            --accent: #60a5fa; --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --hover: #18181b; }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, "Inter", system-ui, sans-serif;
+         -webkit-font-smoothing: antialiased; }
+  main { max-width: 1240px; margin: 0 auto; padding: 28px 24px 64px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 28px; }
+  h1 { font-size: 17px; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  .pill { font-size: 12px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px;
+          display: inline-flex; align-items: center; gap: 6px; background: var(--panel); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+  .live .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 20%, transparent); }
+  .down .dot { background: var(--bad); }
+  .spacer { flex: 1; }
+  .tiles { display: grid; grid-template-columns: repeat(5, 1fr); border: 1px solid var(--line); border-radius: 10px;
+           background: var(--panel); margin-bottom: 20px; }
+  .tile { padding: 14px 18px; border-left: 1px solid var(--line); }
+  .tile:first-child { border-left: 0; }
+  .tile b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+  .tile span { color: var(--muted); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+  section > h2 { font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+                 margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 8px 16px; text-align: left; white-space: nowrap; border-bottom: 1px solid var(--line); }
+  th { font-size: 12px; font-weight: 500; color: var(--faint); }
+  tr:last-child td { border-bottom: 0; }
+  td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody.prog tr.row { cursor: pointer; }
+  tbody.prog tr.row:hover { background: var(--hover); }
+  .exe { font-weight: 550; }
+  .path { color: var(--faint); font-size: 12px; overflow: hidden; text-overflow: ellipsis; max-width: 260px; display: block; }
+  tr.detail td { background: var(--hover); padding: 6px 16px 12px 32px; }
+  tr.detail table td { border: 0; padding: 3px 12px 3px 0; font-size: 13px; }
+  .muted { color: var(--muted); }
+  .faint { color: var(--faint); }
+  .alert { padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .alert:last-child { border-bottom: 0; }
+  .alert p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+  .v { font-size: 11px; font-weight: 600; border-radius: 4px; padding: 1px 6px; margin-right: 6px; text-transform: uppercase;
+       letter-spacing: 0.04em; }
+  .v.suspicious { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+  .v.watch { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+  .v.normal { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+  .v.pending { color: var(--muted); background: var(--hover); }
+  .empty { padding: 18px 16px; color: var(--faint); }
+  .report { padding: 14px 16px; white-space: pre-wrap; font-size: 13.5px; }
+  .feed td { font-family: var(--mono); font-size: 12.5px; padding: 5px 16px; }
+  .feed .k { width: 18px; text-align: center; }
+  .k.connect { color: var(--accent); } .k.close { color: var(--ok); } .k.fail { color: var(--bad); } .k.udp { color: var(--warn); }
+  .err { color: var(--bad); padding: 12px 0; }
+  @media (max-width: 900px) {
+    main { padding: 20px 16px 48px; }
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .tile { border-left: 0; border-top: 1px solid var(--line); }
+    .tile:nth-child(-n+2) { border-top: 0; }
+    .grid { grid-template-columns: 1fr; }
+    section { overflow-x: auto; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>3assas</h1>
+    <span id="status" class="pill"><span class="dot"></span><span id="status-text">connecting</span></span>
+    <span id="learning" class="pill" hidden></span>
+    <span class="spacer"></span>
+    <span class="faint" style="font-size:12px">last 24 h</span>
+  </header>
+  <div id="error" class="err" hidden></div>
+  <div class="tiles" id="tiles"></div>
+  <div class="grid">
+    <div>
+      <section>
+        <h2>Programs <span class="faint" style="text-transform:none;letter-spacing:0;font-weight:400">click a row for its destinations</span></h2>
+        <table>
+          <thead><tr><th>Program</th><th class="n">Conns</th><th class="n">Hosts</th><th class="n">Sent</th><th class="n">Received</th><th>Countries</th></tr></thead>
+          <tbody class="prog" id="programs"></tbody>
+        </table>
+      </section>
+    </div>
+    <div>
+      <section><h2>Alerts</h2><div id="alerts"></div></section>
+      <section><h2>Evening report <span id="report-time" class="faint"></span></h2><div id="report"></div></section>
+    </div>
+  </div>
+  <section class="feed">
+    <h2>Live</h2>
+    <table><tbody id="feed"></tbody></table>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs = {}, ...kids) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") el.className = v; else if (k === "on") el.onclick = v; else el.setAttribute(k, v);
+  }
+  for (const kid of kids.flat()) if (kid != null) el.append(kid instanceof Node ? kid : String(kid));
+  return el;
+}
+const human = (b) => {
+  if (!b) return "0 B";
+  const u = ["B", "kB", "MB", "GB"]; let i = 0;
+  while (b >= 1000 && i < 3) { b /= 1000; i++; }
+  return i ? b.toFixed(1) + " " + u[i] : b + " B";
+};
+const base = (exe) => exe.split("/").pop();
+const flag = (cc) => cc && /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map(c => 0x1f1a5 + c.charCodeAt(0))) : "";
+const clock = (t) => new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const ago = (t, now) => {
+  const s = Math.round((now - t) / 1000);
+  return s < 60 ? s + "s ago" : s < 3600 ? Math.round(s / 60) + " min ago" : Math.round(s / 3600) + " h ago";
+};
+
+let open = null;
+
+async function details(exe, tr) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("detail")) { next.remove(); open = null; return; }
+  document.querySelectorAll("tr.detail").forEach(e => e.remove());
+  open = exe;
+  const r = await fetch("/api/program?exe=" + encodeURIComponent(exe));
+  const list = await r.json();
+  const inner = h("table", {}, list.map(d => h("tr", {},
+    h("td", {}, flag(d.country), " ", d.owner),
+    h("td", { class: "muted" }, d.ips + (d.ips > 1 ? " hosts" : " host")),
+    h("td", { class: "muted" }, d.connections + " conns"),
+    h("td", { class: "muted" }, "↑" + human(d.sent) + "  ↓" + human(d.recv)))));
+  tr.after(h("tr", { class: "detail" }, h("td", { colspan: 6 }, h("div", { class: "path" , style: "max-width:none;margin-bottom:6px" }, exe), inner)));
+}
+
+function render(s) {
+  const fresh = s.heartbeat && s.now - s.heartbeat < 150000;
+  $("status").className = "pill " + (fresh ? "live" : "down");
+  $("status-text").textContent = fresh ? "tracer live" : "tracer stopped";
+  const learning = s.learning_until && s.learning_until > s.now;
+  $("learning").hidden = !learning;
+  if (learning) $("learning").textContent = "learning what is normal · alerts in " + Math.ceil((s.learning_until - s.now) / 3600000) + " h";
+
+  const t = s.total;
+  $("tiles").replaceChildren(...[[t.programs, "programs"], [t.connections, "connections"], [human(t.sent), "sent"],
+    [human(t.recv), "received"], [t.countries, "countries"]].map(([v, l]) => h("div", { class: "tile" }, h("b", {}, v), h("span", {}, l))));
+
+  const rows = [];
+  for (const p of s.programs) {
+    const tr = h("tr", { class: "row" },
+      h("td", {}, h("span", { class: "exe" }, base(p.exe)), h("span", { class: "path" }, p.exe)),
+      h("td", { class: "n" }, p.connections), h("td", { class: "n" }, p.dests),
+      h("td", { class: "n" }, human(p.sent)), h("td", { class: "n" }, human(p.recv)),
+      h("td", { title: p.countries || "" }, (p.countries || "").split(",").filter(Boolean).map(flag).join(" ")));
+    tr.onclick = () => details(p.exe, tr);
+    rows.push(tr);
+  }
+  if (!open) $("programs").replaceChildren(...(rows.length ? rows : [h("tr", {}, h("td", { colspan: 6, class: "empty" }, "No traffic yet."))]));
+
+  $("alerts").replaceChildren(...(s.alerts.length ? s.alerts.map(a => h("div", { class: "alert" },
+    h("div", {}, h("span", { class: "v " + (a.verdict || "pending") }, a.verdict || "unjudged"), a.detail),
+    h("p", {}, (a.why ? a.why + " · " : "") + ago(a.t, s.now)))) :
+    [h("div", { class: "empty" }, learning ? "Quiet while learning, except large uploads." : "Nothing new.")]));
+
+  $("report").replaceChildren(s.report ? h("div", { class: "report" }, s.report.text) : h("div", { class: "empty" }, "First report tonight at 21:00."));
+  $("report-time").textContent = s.report ? new Date(s.report.t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
+
+  $("feed").replaceChildren(...s.feed.map(e => {
+    const fail = e.kind === "close" && e.failed;
+    const sign = { connect: "→", close: fail ? "✗" : "✓", udp: "↗" }[e.kind];
+    const dest = (e.ip.includes(":") ? "[" + e.ip + "]" : e.ip) + ":" + e.port;
+    const what = e.kind === "connect" ? [e.owner, e.country].filter(Boolean).join(" · ")
+      : fail ? "no answer" : e.kind === "close" ? (e.duration_ms / 1000).toFixed(1) + "s  ↑" + human(e.sent) + "  ↓" + human(e.recv)
+      : "↑" + human(e.sent) + "  " + [e.owner, e.country].filter(Boolean).join(" · ");
+    return h("tr", {}, h("td", { class: "faint" }, clock(e.t)), h("td", { class: "k " + (fail ? "fail" : e.kind) }, sign),
+      h("td", { class: "muted" }, e.proto), h("td", {}, base(e.exe)), h("td", {}, dest), h("td", { class: "muted" }, what));
+  }));
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/api/state");
+    const s = await r.json();
+    if (!r.ok) throw new Error(s.error || r.status);
+    $("error").hidden = true;
+    render(s);
+  } catch (e) {
+    $("error").hidden = false;
+    $("error").textContent = "Cannot read the tracer database: " + e.message;
+    $("status").className = "pill down"; $("status-text").textContent = "offline";
+  }
+}
+tick();
+setInterval(tick, 3000);
+</script>
+</body>
+</html>

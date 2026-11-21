@@ -1,0 +1,20 @@
+[Unit]
+Description=3assas eBPF connection tracer
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/3assas --db /var/lib/3assas/3assas.db --data /usr/local/share/3assas
+StateDirectory=3assas
+StateDirectoryMode=0755
+UMask=0022
+Restart=always
+RestartSec=5
+# Least privilege: what eBPF tracing and reading /proc/<pid>/exe need, nothing else.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_SYS_RESOURCE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
