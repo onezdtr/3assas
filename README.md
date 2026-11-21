@@ -46,6 +46,22 @@ Userspace (Rust, libbpf-rs) resolves `/proc/<pid>/exe`, labels IPs with their ne
 ([iptoasn](https://iptoasn.com), PDDL) and country ([DB-IP Lite](https://db-ip.com), CC BY 4.0) through binary search on
 in-memory range tables, and prints a line per event or JSON lines (`--json`). Ctrl-C prints a per-program summary.
 
+## Overhead
+
+`sudo python3 bench/bench.py`: loopback workloads (the worst case, no network latency to hide behind) with the
+service stopped and running, alternating every round, median of 7. Apple M1, Fedora Asahi, kernel 7.1.
+
+| Workload | Tracer off | Tracer on | Change |
+|---|---|---|---|
+| TCP connect + close | 68.9 µs | 68.9 µs | 0 % |
+| 512 B UDP datagram | 2.08 µs | 2.34 µs | +12 % (0.26 µs) |
+| TCP stream | 78.9 Gbit/s | 81.0 Gbit/s | noise (runs swing 40–82) |
+
+Kernel time per call (`kernel.bpf_stats_enabled`): `on_ingress` 44 ns per received packet, `on_udp4` 110 ns per
+send, `on_tcp_state` 839 ns per TCP state change (averaged over the cheap early exits and the connect/close
+events that reserve ring buffer space). Only the UDP send path is measurable, and only when nothing else is: a real
+network adds milliseconds where 3assas adds a fraction of a microsecond.
+
 ## Run
 
 Linux ≥ 5.11 with BTF (`/sys/kernel/btf/vmlinux`), clang, bpftool, libelf.
