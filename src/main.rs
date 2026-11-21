@@ -1,3 +1,4 @@
+mod dns;
 mod event;
 mod geo;
 mod store;
@@ -6,6 +7,7 @@ use std::{
     collections::{HashMap, HashSet},
     mem::MaybeUninit,
     net::IpAddr,
+    os::fd::AsRawFd,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -26,6 +28,12 @@ mod tracer {
     include!(concat!(env!("OUT_DIR"), "/tracer.skel.rs"));
 }
 use tracer::TracerSkelBuilder;
+
+/// What the shared ring buffer carries: a connection event or a raw DNS answer.
+enum Msg {
+    Conn(RawEvent),
+    Dns(Vec<u8>),
+}
 
 static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -160,12 +168,24 @@ fn main() -> Result<()> {
         .load()
         .context("load BPF program")?;
     skel.attach().context("attach BPF program")?;
+    // The DNS watcher needs a cgroup v2 root; without one, connections just come unnamed.
+    let _dns = std::fs::File::open("/sys/fs/cgroup")
+        .map_err(anyhow::Error::from)
+        .and_then(|cg| Ok(skel.progs.on_ingress.attach_cgroup(cg.as_raw_fd())?))
+        .map_err(|e| eprintln!("warning: DNS watcher not attached ({e:#}), domains disabled"))
+        .ok();
 
     let (tx, rx) = mpsc::channel();
     let mut rb = RingBufferBuilder::new();
     rb.add(&skel.maps.events, move |data| {
-        if let Some(e) = RawEvent::parse(data) {
-            let _ = tx.send(e);
+        // One ring for both kinds keeps their order: a DNS answer always arrives before the connect it enables.
+        let msg = if data.len() == std::mem::size_of::<RawEvent>() {
+            RawEvent::parse(data).map(Msg::Conn)
+        } else {
+            dns::payload(data).map(|p| Msg::Dns(p.to_vec()))
+        };
+        if let Some(m) = msg {
+            let _ = tx.send(m);
         }
         0
     })?;
@@ -197,6 +217,7 @@ fn main() -> Result<()> {
             .sum()
     };
     let mut exes = Exes(HashMap::new());
+    let mut names = dns::Names::default();
     let mut stats: HashMap<String, Stat> = HashMap::new();
     let mut batch = Vec::new();
     let mut last_tick = 0;
@@ -204,8 +225,16 @@ fn main() -> Result<()> {
         // EINTR on Ctrl-C is expected: the loop condition handles it.
         let _ = rb.poll(Duration::from_millis(200));
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
-        for e in rx.try_iter() {
+        for m in rx.try_iter() {
+            let e = match m {
+                Msg::Conn(e) => e,
+                Msg::Dns(p) => {
+                    names.learn(&p);
+                    continue;
+                }
+            };
             let ip = e.addr();
+            let domain = names.get(ip).map(String::from);
             if !o.all && (ip.is_loopback() || ip.is_unspecified()) {
                 continue;
             }
@@ -239,6 +268,7 @@ fn main() -> Result<()> {
                 recv: e.bytes_recv,
                 duration_ms: e.duration_ns / 1_000_000,
                 failed: e.failed(),
+                domain,
             };
 
             if store.is_some() {
@@ -257,7 +287,7 @@ fn main() -> Result<()> {
             if o.json {
                 let v = serde_json::json!({
                     "time_ms": r.t_ms, "event": r.kind, "proto": r.proto, "pid": r.pid, "uid": r.uid,
-                    "comm": r.comm, "exe": r.exe, "ip": r.ip, "port": r.port, "owner": r.owner,
+                    "comm": r.comm, "exe": r.exe, "ip": r.ip, "port": r.port, "domain": r.domain, "owner": r.owner,
                     "country": r.country, "bytes_sent": r.sent, "bytes_recv": r.recv,
                     "duration_ms": r.duration_ms, "failed": r.failed,
                 });
@@ -271,7 +301,7 @@ fn main() -> Result<()> {
                 IpAddr::V6(_) => format!("[{ip}]:{}", e.dport),
                 _ => format!("{ip}:{}", e.dport),
             };
-            let label = [owner, cc]
+            let label = [r.domain.as_deref(), owner, cc]
                 .iter()
                 .flatten()
                 .copied()

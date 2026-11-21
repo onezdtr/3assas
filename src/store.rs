@@ -22,6 +22,7 @@ pub struct Row {
     pub recv: u64,
     pub duration_ms: u64,
     pub failed: bool,
+    pub domain: Option<String>,
 }
 
 pub struct Store(Connection);
@@ -39,10 +40,19 @@ impl Store {
                pid INTEGER NOT NULL, uid INTEGER NOT NULL, comm TEXT NOT NULL, exe TEXT NOT NULL,
                ip TEXT NOT NULL, port INTEGER NOT NULL, owner TEXT, country TEXT,
                sent INTEGER NOT NULL, recv INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
-               failed INTEGER NOT NULL);
+               failed INTEGER NOT NULL, domain TEXT);
              CREATE INDEX IF NOT EXISTS events_t ON events(t);
              CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value INTEGER NOT NULL);",
         )?;
+        // Databases created before domains existed.
+        let has_domain: bool = c.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('events') WHERE name = 'domain'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_domain {
+            c.execute("ALTER TABLE events ADD COLUMN domain TEXT", [])?;
+        }
         Ok(Self(c))
     }
 
@@ -51,12 +61,13 @@ impl Store {
         let tx = self.0.transaction()?;
         {
             let mut st = tx.prepare_cached(
-                "INSERT INTO events VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                "INSERT INTO events(t, kind, proto, pid, uid, comm, exe, ip, port, owner, country, sent, recv,
+                 duration_ms, failed, domain) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
             )?;
             for r in rows {
                 st.execute(params![
                     r.t_ms, r.kind, r.proto, r.pid, r.uid, r.comm, r.exe, r.ip, r.port,
-                    r.owner, r.country, r.sent as i64, r.recv as i64, r.duration_ms as i64, r.failed
+                    r.owner, r.country, r.sent as i64, r.recv as i64, r.duration_ms as i64, r.failed, r.domain
                 ])?;
             }
         }
@@ -87,7 +98,7 @@ mod tests {
         Row {
             t_ms, kind: "connect", proto: "TCP", pid: 1, uid: 0, comm: "curl".into(),
             exe: "/usr/bin/curl".into(), ip: "1.1.1.1".into(), port: 443, owner: None,
-            country: Some("US".into()), sent: 0, recv: 0, duration_ms: 0, failed: false,
+            country: Some("US".into()), sent: 0, recv: 0, duration_ms: 0, failed: false, domain: Some("one.one.one.one".into()),
         }
     }
 
@@ -100,5 +111,24 @@ mod tests {
         let n: i64 = s.0.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
         let d: i64 = s.0.query_row("SELECT value FROM meta WHERE key='drops'", [], |r| r.get(0)).unwrap();
         assert_eq!((n, d), (1, 3));
+    }
+
+    #[test]
+    fn adds_the_domain_column_to_an_old_database() {
+        let f = std::env::temp_dir().join(format!("3assas-old-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&f);
+        Connection::open(&f).unwrap().execute_batch(
+            "CREATE TABLE events(t INTEGER NOT NULL, kind TEXT NOT NULL, proto TEXT NOT NULL,
+               pid INTEGER NOT NULL, uid INTEGER NOT NULL, comm TEXT NOT NULL, exe TEXT NOT NULL,
+               ip TEXT NOT NULL, port INTEGER NOT NULL, owner TEXT, country TEXT,
+               sent INTEGER NOT NULL, recv INTEGER NOT NULL, duration_ms INTEGER NOT NULL,
+               failed INTEGER NOT NULL);",
+        ).unwrap();
+        let mut s = Store::open(&f).unwrap();
+        s.insert(&[row(1)]).unwrap();
+        let d: String = s.0.query_row("SELECT domain FROM events", [], |r| r.get(0)).unwrap();
+        assert_eq!(d, "one.one.one.one");
+        drop(s);
+        let _ = std::fs::remove_file(&f);
     }
 }

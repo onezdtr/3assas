@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value);
 
 JUDGE = f"""You watch the network activity of one Linux laptop, program by program, captured in the kernel (eBPF).
 You get alerts (a program's first time on the network, its first contact with a country, a large upload) and, for
-each program involved, where it connected in the last 24 hours (network owner = ASN, country).
+each program involved, where it connected in the last 24 hours (domain = the name it looked up, when known;
+network owner = ASN; country).
 For every alert decide a verdict:
 - "normal": expected for that kind of program (a browser reaching a CDN in a new country, a package manager
   reaching its mirrors, a system service reaching its vendor);
@@ -55,7 +56,7 @@ JUDGE_SCHEMA = {"type": "ARRAY", "items": {"type": "OBJECT", "required": ["id", 
 
 REPORT = f"""You write the evening report of a Linux laptop's network activity, captured per program in the kernel.
 You get, for the last 24 hours, each program with its connections, bytes sent/received, main network owners and
-countries, plus the alerts of the day with their verdicts. Write in plain {LANG}, for Telegram, no markdown,
+countries and the domain names it looked up, plus the alerts of the day with their verdicts. Write in plain {LANG}, for Telegram, no markdown,
 1500 characters at most: one line per notable program (what it talked to, in words a non-expert understands),
 then anything surprising. Skip programs with nothing to say. Use only the data given."""
 
@@ -117,14 +118,14 @@ def ingest(ev, ag, now):
         cursor = 0  # the tracer database was recreated
     created = []
     while True:
-        rows = ev.execute("""SELECT rowid, t, kind, exe, ip, port, owner, country FROM events
+        rows = ev.execute("""SELECT rowid, t, kind, exe, ip, port, owner, country, domain FROM events
                              WHERE rowid > ? ORDER BY rowid LIMIT 5000""", (cursor,)).fetchall()
-        for rowid, t, kind, exe, ip, port, owner, cc in rows:
+        for rowid, t, kind, exe, ip, port, owner, cc, domain in rows:
             cursor = rowid
             if kind == "close":
                 continue
             labels = ", ".join(x for x in (owner, cc) if x)
-            where = f"{ip}:{port}" + (f" ({labels})" if labels else "")
+            where = (f"{domain} " if domain else "") + f"{ip}:{port}" + (f" ({labels})" if labels else "")
             new_program = first(ag, exe, "program", "", t)
             if new_program and learned:
                 created.append(alert(ag, t, exe, "new_program", f"{name(exe)} used the network for the first time → {where}"))
@@ -147,9 +148,9 @@ def profile(ev, exes, since):
     """Where each program connected since `since`: the context the AI judges with."""
     out = {}
     for exe in exes:
-        owners = ev.execute("""SELECT COALESCE(owner, ip), country, COUNT(*), SUM(sent), SUM(recv) FROM events
-                               WHERE exe = ? AND t >= ? GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 12""", (exe, since)).fetchall()
-        out[exe] = [dict(zip(("owner", "country", "events", "sent", "recv"), o)) for o in owners]
+        dests = ev.execute("""SELECT domain, COALESCE(owner, ip), country, COUNT(*), SUM(sent), SUM(recv) FROM events
+                              WHERE exe = ? AND t >= ? GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 15""", (exe, since)).fetchall()
+        out[exe] = [dict(zip(("domain", "owner", "country", "events", "sent", "recv"), d)) for d in dests]
     return out
 
 

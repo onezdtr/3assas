@@ -9,12 +9,12 @@ DAY = 86400 * 1000
 def events():
     db = sqlite3.connect(":memory:")
     db.execute("""CREATE TABLE events(t, kind, proto, pid, uid, comm, exe, ip, port, owner, country,
-                                      sent, recv, duration_ms, failed)""")
+                                      sent, recv, duration_ms, failed, domain)""")
     return db
 
 
 def add(db, t, exe, country="US", kind="connect", sent=0):
-    db.execute("INSERT INTO events VALUES (?, ?, 'TCP', 1, 0, 'x', ?, '1.2.3.4', 443, 'ACME', ?, ?, 0, 0, 0)",
+    db.execute("INSERT INTO events VALUES (?, ?, 'TCP', 1, 0, 'x', ?, '1.2.3.4', 443, 'ACME', ?, ?, 0, 0, 0, 'acme.example')",
                (t, kind, exe, country, sent))
 
 

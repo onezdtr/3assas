@@ -140,7 +140,7 @@ async function details(exe, tr) {
   const r = await fetch("/api/program?exe=" + encodeURIComponent(exe));
   const list = await r.json();
   const inner = h("table", {}, list.map(d => h("tr", {},
-    h("td", {}, flag(d.country), " ", d.owner),
+    h("td", {}, flag(d.country), " ", d.domain || d.owner, d.domain ? h("span", { class: "muted" }, "  " + d.owner) : ""),
     h("td", { class: "muted" }, d.ips + (d.ips > 1 ? " hosts" : " host")),
     h("td", { class: "muted" }, d.connections + " conns"),
     h("td", { class: "muted" }, "↑" + human(d.sent) + "  ↓" + human(d.recv)))));
@@ -182,12 +182,12 @@ function render(s) {
   $("feed").replaceChildren(...s.feed.map(e => {
     const fail = e.kind === "close" && e.failed;
     const sign = { connect: "→", close: fail ? "✗" : "✓", udp: "↗" }[e.kind];
-    const dest = (e.ip.includes(":") ? "[" + e.ip + "]" : e.ip) + ":" + e.port;
+    const dest = e.domain ? e.domain + ":" + e.port : (e.ip.includes(":") ? "[" + e.ip + "]" : e.ip) + ":" + e.port;
     const what = e.kind === "connect" ? [e.owner, e.country].filter(Boolean).join(" · ")
       : fail ? "no answer" : e.kind === "close" ? (e.duration_ms / 1000).toFixed(1) + "s  ↑" + human(e.sent) + "  ↓" + human(e.recv)
       : "↑" + human(e.sent) + "  " + [e.owner, e.country].filter(Boolean).join(" · ");
     return h("tr", {}, h("td", { class: "faint" }, clock(e.t)), h("td", { class: "k " + (fail ? "fail" : e.kind) }, sign),
-      h("td", { class: "muted" }, e.proto), h("td", {}, base(e.exe)), h("td", {}, dest), h("td", { class: "muted" }, what));
+      h("td", { class: "muted" }, e.proto), h("td", {}, base(e.exe)), h("td", { title: e.ip }, dest), h("td", { class: "muted" }, what));
   }));
 }
 

@@ -31,9 +31,10 @@ def state(ev_path, ag_path, now):
                                       GROUP_CONCAT(DISTINCT country), MAX(t)
                                FROM events WHERE t >= ? GROUP BY exe ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 60""",
                         (day,), ("exe", "connections", "dests", "sent", "recv", "countries", "last"))
-        feed = rows(ev, """SELECT t, kind, proto, exe, ip, port, owner, country, sent, recv, duration_ms, failed
+        feed = rows(ev, """SELECT t, kind, proto, exe, ip, port, domain, owner, country, sent, recv, duration_ms, failed
                            FROM events ORDER BY rowid DESC LIMIT 80""", (),
-                    ("t", "kind", "proto", "exe", "ip", "port", "owner", "country", "sent", "recv", "duration_ms", "failed"))
+                    ("t", "kind", "proto", "exe", "ip", "port", "domain", "owner", "country", "sent", "recv", "duration_ms",
+                     "failed"))
     finally:
         ev.close()
     alerts, report, started = [], None, None
@@ -54,10 +55,10 @@ def state(ev_path, ag_path, now):
 def program(ev_path, exe, now):
     ev = sqlite3.connect(f"file:{ev_path}?mode=ro", uri=True, timeout=5)
     try:
-        return rows(ev, """SELECT COALESCE(owner, '?'), country, COUNT(DISTINCT ip), SUM(kind != 'close'), SUM(sent),
-                                  SUM(recv), MAX(t)
-                           FROM events WHERE exe = ? AND t >= ? GROUP BY 1, 2 ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 40""",
-                    (exe, now - 86400 * 1000), ("owner", "country", "ips", "connections", "sent", "recv", "last"))
+        return rows(ev, """SELECT domain, COALESCE(owner, '?'), country, COUNT(DISTINCT ip), SUM(kind != 'close'),
+                                  SUM(sent), SUM(recv), MAX(t)
+                           FROM events WHERE exe = ? AND t >= ? GROUP BY 1, 2, 3 ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 40""",
+                    (exe, now - 86400 * 1000), ("domain", "owner", "country", "ips", "connections", "sent", "recv", "last"))
     finally:
         ev.close()
 

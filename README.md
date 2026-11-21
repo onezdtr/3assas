@@ -8,7 +8,7 @@
 reaching a new CDN region does not.</sub>
 
 ```
-13:41:09  → TCP  curl               140.82.121.3:443        GITHUB - GitHub, Inc. · GB
+13:41:09  → TCP  curl               140.82.121.3:443        api.github.com · GITHUB - GitHub, Inc. · GB
 13:41:09  ✓ TCP  curl               140.82.121.3:443        0.2s  ↑1.9 kB  ↓548.2 kB
 13:41:11  ✗ TCP  curl               192.0.2.1:81            no answer after 2.0s
 13:41:11  ↗ UDP  brave              142.251.39.206:443      ↑1.2 kB  GOOGLE - Google LLC · US
@@ -24,6 +24,7 @@ executable that opened it: hardcoded IPs, DNS-over-HTTPS, QUIC, apps that never 
 | `tp_btf/inet_sock_set_state` → `SYN_SENT` | outbound TCP connect, owner pid/uid/comm | once per connection |
 | `tp_btf/inet_sock_set_state` → `CLOSE` | duration, payload bytes both ways, failed handshakes | once per connection |
 | `fentry/udp_sendmsg`, `udpv6_sendmsg` | UDP flows (QUIC, DNS, games) | map lookup per send, event once per flow / 30 s |
+| `cgroup_skb/ingress` on the root cgroup | DNS answers (UDP from port 53), copied raw to userspace | 2 header reads per received packet |
 
 Design choices:
 - **No per-packet path for TCP.** Byte counts are read from `tcp_sock` once at close (`bytes_sent - bytes_retrans`,
@@ -32,6 +33,12 @@ Design choices:
   unrelated task, so the owner is stored per socket when `connect()` runs.
 - **CO-RE.** Built against the running kernel's BTF (`vmlinux.h` is generated at build time), checked downcast with
   `bpf_skc_to_tcp_sock`.
+- **Domains from the answers the machine already gets.** The kernel copies each DNS answer (up to 1232 bytes, the
+  EDNS default) into the same ring buffer as connections, so an answer is always read before the connect it enables.
+  Userspace parses it (compression pointers bounded, names limited to hostname characters: the packet comes off the
+  network) and tags each address with the name that was *asked*, not the CDN alias at the end of the CNAME chain.
+  Seen on loopback too, so it works behind systemd-resolved. Not seen: DNS-over-HTTPS/TLS and DNS over TCP; the
+  connection then keeps its IP, owner and country.
 - **The observer reports its blind spots.** A per-CPU counter tracks events lost to a full ring buffer or map, and the
   summary says so.
 
@@ -57,7 +64,7 @@ sudo ./target/release/3assas            # --json, --all (include loopback)
 sudo ./install.sh     # builds, installs and starts both services at boot
 ```
 
-- `3assas.service` (root, capabilities bounded to BPF/PERFMON/PTRACE): `3assas --db /var/lib/3assas/3assas.db` writes
+- `3assas.service` (root, capabilities bounded to BPF/PERFMON/NET_ADMIN/PTRACE): `3assas --db /var/lib/3assas/3assas.db` writes
   every event to SQLite (WAL, one transaction per batch, 30-day retention).
 - `3assas-agent.service` (your user, read-only on the tracer database): every 30 s it flags a program's first time on
   the network, its first contact with a country, or more than 50 MB sent in an hour. An AI (Gemini) judges each flag
@@ -73,8 +80,8 @@ everything; there is just no AI verdict or Telegram message. `ASSAS_LANG` sets t
 ## Tests
 
 ```sh
-cargo test                                          # parsing, range lookups
-sudo -E cargo test --release -- --include-ignored   # end to end: real connection, exact byte counts
+cargo test                                          # event and DNS parsing, range lookups, database migration
+sudo -E cargo test --release -- --include-ignored   # end to end: exact byte counts, a fake DNS answer names the connection
 cd agent && python3 -m unittest test_agent         # alert rules, learning period, Telegram retry
 ```
 

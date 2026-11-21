@@ -2,6 +2,8 @@
 // Kernel side of 3assas: who opens which outbound connection, and how much flows through it.
 // Design rule: no per-packet work. TCP is observed only on state changes; byte counts are
 // read once from tcp_sock at close. UDP is sampled per flow (first packet, then every 30 s).
+// One exception: incoming packets get a header check so DNS answers (UDP from port 53) can be
+// copied out; everything else leaves after reading 2 small headers.
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
@@ -14,6 +16,12 @@
 // From include/net/tcp_states.h (anonymous enum, not reliably present in vmlinux.h).
 #define ST_SYN_SENT 2
 #define ST_CLOSE 7
+
+#define ETH_P_IP 0x0800
+#define ETH_P_IPV6 0x86DD
+#define DNS_PORT 53
+// EDNS default buffer size (DNS flag day 2020): larger answers are cut, their tail records lost.
+#define DNS_MAX 1232
 
 #define UDP_REPORT_NS (30ULL * 1000000000ULL)
 
@@ -35,6 +43,13 @@ struct event {
 	u8 _pad;
 	u8 daddr[16];
 	char comm[16];
+};
+
+// A raw DNS answer, parsed in userspace (src/dns.rs). Told apart from struct event by its size.
+struct dns_event {
+	u32 len;
+	u32 _pad;
+	u8 data[DNS_MAX];
 };
 
 // TCP state changes to CLOSE often run in softirq context, where "current" is a random task.
@@ -242,6 +257,54 @@ SEC("fentry/udpv6_sendmsg")
 int BPF_PROG(on_udp6, struct sock *sk, struct msghdr *msg, size_t len)
 {
 	return udp_send(sk, msg, len, AF_INET6);
+}
+
+// Attached to the root cgroup, so it sees what every local socket receives, loopback included
+// (the systemd-resolved stub answering programs on 127.0.0.53). Never drops a packet: always returns 1.
+SEC("cgroup_skb/ingress")
+int on_ingress(struct __sk_buff *skb)
+{
+	u32 off;
+	if (skb->protocol == bpf_htons(ETH_P_IP)) {
+		struct iphdr ip;
+		if (bpf_skb_load_bytes(skb, 0, &ip, sizeof(ip)) || ip.protocol != PROTO_UDP)
+			return 1;
+		off = ip.ihl * 4;
+	} else if (skb->protocol == bpf_htons(ETH_P_IPV6)) {
+		struct ipv6hdr ip6;
+		// shortcut: a UDP header behind IPv6 extension headers is missed; walk them if DNS over such packets shows up
+		if (bpf_skb_load_bytes(skb, 0, &ip6, sizeof(ip6)) || ip6.nexthdr != PROTO_UDP)
+			return 1;
+		off = sizeof(ip6);
+	} else {
+		return 1;
+	}
+	struct udphdr udp;
+	if (bpf_skb_load_bytes(skb, off, &udp, sizeof(udp)) || udp.source != bpf_htons(DNS_PORT))
+		return 1;
+	off += sizeof(udp);
+	if (skb->len <= off)
+		return 1;
+	u32 len = skb->len - off;
+	if (len > DNS_MAX)
+		len = DNS_MAX;
+
+	struct dns_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e) {
+		count_drop();
+		return 1;
+	}
+	// The verifier needs 1 <= len <= DNS_MAX on the very register passed to the helper:
+	// barrier_var stops clang from merging these checks with the ones above.
+	barrier_var(len);
+	if (len < 1 || len > DNS_MAX || bpf_skb_load_bytes(skb, off, e->data, len)) {
+		bpf_ringbuf_discard(e, 0);
+		return 1;
+	}
+	e->len = len;
+	e->_pad = 0;
+	bpf_ringbuf_submit(e, 0);
+	return 1;
 }
 
 char LICENSE[] SEC("license") = "GPL";
