@@ -62,14 +62,63 @@ class Notify(unittest.TestCase):
         agent.alert(ag, 0, "/b", "new_program", "b → RU")
         ag.execute("UPDATE alerts SET verdict = 'normal' WHERE exe = '/a'")
         sent = []
-        agent.telegram = lambda text: sent.append(text) and False  # Telegram down
+        agent.telegram = lambda text, buttons=None: sent.append(text) and False  # Telegram down
         agent.notify(ag)
         self.assertEqual(ag.execute("SELECT SUM(notified) FROM alerts").fetchone()[0], 0)
-        agent.telegram = lambda text: sent.append(text) or True
+        agent.telegram = lambda text, buttons=None: sent.append(text) or True
         agent.notify(ag)
         self.assertIn("b → RU", sent[-1])
         self.assertNotIn("a → CN", sent[-1])
         self.assertEqual(ag.execute("SELECT SUM(notified) FROM alerts").fetchone()[0], 2)
+
+
+class Buttons(unittest.TestCase):
+    def test_flagged_programs_get_one_block_button_each(self):
+        ag = agent.open_agent(":memory:")
+        for exe, verdict in (("/tmp/x", "suspicious"), ("/tmp/x", "watch"), ("/usr/bin/ok", "normal"), ("/opt/y", "watch")):
+            i = agent.alert(ag, 0, exe, "new_program", exe)
+            ag.execute("UPDATE alerts SET verdict = ? WHERE id = ?", (verdict, i))
+        got = []
+        agent.telegram = lambda text, buttons=None: got.append(buttons) or True
+        agent.notify(ag)
+        self.assertEqual([t for t, _ in got[0]], ["⊘ Block x", "⊘ Block y"])
+
+    def test_only_the_owner_can_press(self):
+        ag = agent.open_agent(":memory:")
+        i = agent.alert(ag, 0, "/tmp/x", "new_program", "x")
+        asked = []
+        agent.block = lambda exe: asked.append(exe) or "ok blocked " + exe
+        tap = lambda who, data: {"update_id": 1, "callback_query": {"id": "q", "from": {"id": who}, "data": data}}
+        self.assertIsNone(agent.on_button(ag, tap(666, f"block:{i}"), 42))  # a stranger
+        self.assertIsNone(agent.on_button(ag, tap(42, "block:999"), 42))  # unknown alert
+        self.assertIsNone(agent.on_button(ag, {"update_id": 2, "message": {"text": "/start"}}, 42))
+        self.assertEqual(agent.on_button(ag, tap(42, f"block:{i}"), 42), "⊘ x blocked")
+        self.assertEqual(asked, ["/tmp/x"])
+
+
+class ControlSocket(unittest.TestCase):
+    def test_block_sends_one_line_and_reads_the_answer(self):
+        import importlib, socket, tempfile, threading
+        path = tempfile.mktemp(suffix=".sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(1)
+        got = []
+
+        def answer():
+            c, _ = srv.accept()
+            got.append(c.makefile().readline())
+            c.sendall(b"ok blocked /tmp/x\n")
+            c.close()
+
+        threading.Thread(target=answer).start()
+        real = importlib.reload(agent)  # undo the monkeypatching of other tests
+        real.CONTROL = path
+        self.assertEqual(real.block("/tmp/x"), "ok blocked /tmp/x")
+        self.assertEqual(got, ["block /tmp/x\n"])
+        real.CONTROL = path + ".missing"
+        self.assertTrue(real.block("/tmp/x").startswith("error: tracer unreachable"))
+        srv.close()
 
 
 if __name__ == "__main__":

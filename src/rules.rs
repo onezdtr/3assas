@@ -70,6 +70,20 @@ fn write(file: &Path, list: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 
+/// Adds an exact executable path (as the kernel reports it) to the list. False if already there.
+pub fn add(file: &Path, path: &str) -> Result<bool> {
+    if !path.starts_with('/') || key(path).is_none() {
+        bail!("not a blockable absolute path: {path}");
+    }
+    guard(path)?;
+    let mut list = read(file);
+    if !list.insert(path.to_owned()) {
+        return Ok(false);
+    }
+    write(file, &list)?;
+    Ok(true)
+}
+
 /// `3assas block PATH`, `3assas unblock PATH`, `3assas blocked`.
 pub fn command(cmd: &str, arg: Option<&str>, file: &Path) -> Result<()> {
     let mut list = read(file);
@@ -83,12 +97,10 @@ pub fn command(cmd: &str, arg: Option<&str>, file: &Path) -> Result<()> {
         }
         ("block", Some(a)) => {
             let p = resolve(a)?;
-            guard(&p)?;
-            if !list.insert(p.clone()) {
+            if !add(file, &p)? {
                 println!("{p} is already blocked");
                 return Ok(());
             }
-            write(file, &list)?;
             println!("blocked {p}: new sockets are refused (connections already open stay until the program closes them)");
         }
         ("unblock", Some(a)) => {

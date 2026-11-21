@@ -49,6 +49,12 @@ sockets at creation (`socket()` fails with `EPERM`), so TCP, UDP, QUIC and DNS l
 (D-Bus, display) keep working. Programs that keep the machine online (systemd's resolver and network daemons,
 NetworkManager, wpa_supplicant, sshd, tailscaled) and 3assas itself cannot be blocked.
 
+From Telegram: alerts judged `watch` or `suspicious` come with a **Block** button. The agent has no root; it asks
+the service over `/run/3assas/control.sock`, and the service checks the caller's uid with `SO_PEERCRED`: a user can
+block only programs that ran as that user, never a system service, and unblocking is not offered there at all,
+so a compromised account cannot free what you cut off. Give 3assas a bot of its own (BotFather): the agent reads
+its updates for the button taps, only the configured chat's taps count.
+
 ## How it works
 
 | Hook | What it catches | Cost |

@@ -75,6 +75,11 @@ impl Store {
         Ok(())
     }
 
+    /// Has `uid` run `exe` with network activity? Decides who may block what over the control socket.
+    pub fn seen(&self, exe: &str, uid: u32) -> Result<bool> {
+        Ok(self.0.query_row("SELECT EXISTS(SELECT 1 FROM events WHERE exe = ?1 AND uid = ?2)", params![exe, uid], |r| r.get(0))?)
+    }
+
     /// Housekeeping: drop old events and publish counters for the page.
     pub fn tick(&self, now_ms: i64, drops: u64) -> Result<()> {
         self.0.execute(
@@ -111,6 +116,8 @@ mod tests {
         let n: i64 = s.0.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0)).unwrap();
         let d: i64 = s.0.query_row("SELECT value FROM meta WHERE key='drops'", [], |r| r.get(0)).unwrap();
         assert_eq!((n, d), (1, 3));
+        assert!(s.seen("/usr/bin/curl", 0).unwrap());
+        assert!(!s.seen("/usr/bin/curl", 1000).unwrap());
     }
 
     #[test]

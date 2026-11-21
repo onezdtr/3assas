@@ -37,6 +37,7 @@ for f in ip2asn.tsv.gz dbip-country.csv.gz; do
 done
 
 install -m 755 "$BIN" /usr/local/bin/3assas
+install -d -m 755 /etc/3assas
 install -m 644 systemd/3assas.service /etc/systemd/system/
 sed "s|@USER@|$USER_NAME|; s|@DIR@|$DIR|" systemd/3assas-agent.service > /etc/systemd/system/3assas-agent.service
 systemctl daemon-reload

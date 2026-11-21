@@ -1,3 +1,4 @@
+mod control;
 mod dns;
 mod event;
 mod geo;
@@ -151,6 +152,23 @@ impl Exes {
     }
 }
 
+/// Policy of the control socket. Only "block": unblocking stays with `sudo 3assas unblock`, so a
+/// compromised user account cannot free a program you cut off. A non-root caller may block only
+/// executables that ran under its own uid, so it cannot cut off another user's or a system service.
+fn control_request(db: &store::Store, rules_file: &Path, uid: u32, req: &str) -> String {
+    let Some(path) = req.strip_prefix("block ") else {
+        return "error: unknown request".into();
+    };
+    if uid != 0 && !db.seen(path, uid).unwrap_or(false) {
+        return "error: you can only block programs that ran as you".into();
+    }
+    match rules::add(rules_file, path) {
+        Ok(true) => format!("ok blocked {path}"),
+        Ok(false) => format!("ok already blocked {path}"),
+        Err(e) => format!("error: {e:#}"),
+    }
+}
+
 /// Mirrors the block list file into the kernel map whenever the file changes.
 #[derive(Default)]
 struct Blocker {
@@ -280,6 +298,13 @@ fn main() -> Result<()> {
     }
 
     let mut store = o.db.as_deref().map(store::Store::open).transpose().context("open database")?;
+    // Service mode only: the policy below needs the event history.
+    let control = (store.is_some() && can_block)
+        .then(|| control::Control::bind(Path::new(control::SOCK)))
+        .transpose()
+        .map_err(|e| eprintln!("warning: control socket unavailable ({e:#}): blocking from the agent disabled"))
+        .ok()
+        .flatten();
     let read_drops = || -> u64 {
         skel.maps
             .drops
@@ -417,6 +442,13 @@ fn main() -> Result<()> {
                 e.proto()
             );
         }
+        if let (Some(c), Some(db)) = (&control, &store) {
+            c.serve(|uid, req| {
+                let reply = control_request(db, &o.rules, uid, req);
+                eprintln!("control: uid {uid}: {req} -> {reply}");
+                reply
+            });
+        }
         if let Some(db) = &mut store {
             // A failed write is logged and retried with the next batch instead of killing the tracer.
             if !batch.is_empty() {
@@ -464,4 +496,32 @@ fn main() -> Result<()> {
         eprintln!("\nwarning: {drops} events lost (buffers full), counts above are a lower bound");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_policy_only_blocks_your_own_programs() {
+        let mut db = store::Store::open(Path::new(":memory:")).unwrap();
+        db.insert(&[store::Row {
+            t_ms: 1, kind: "connect", proto: "TCP", pid: 1, uid: 1000, comm: "upd".into(),
+            exe: "/home/me/.cache/x/upd".into(), ip: "1.2.3.4".into(), port: 443, owner: None,
+            country: None, sent: 0, recv: 0, duration_ms: 0, failed: false, domain: None,
+        }])
+        .unwrap();
+        let file = std::env::temp_dir().join(format!("3assas-policy-{}", std::process::id()));
+        let _ = std::fs::remove_file(&file);
+        let ask = |uid, req| control_request(&db, &file, uid, req);
+
+        assert!(ask(1001, "block /home/me/.cache/x/upd").starts_with("error"), "another user's program");
+        assert!(ask(1000, "block /usr/bin/curl").starts_with("error"), "never ran as this user");
+        assert!(ask(1000, "unblock /home/me/.cache/x/upd").starts_with("error"), "no unblocking here");
+        assert_eq!(ask(1000, "block /home/me/.cache/x/upd"), "ok blocked /home/me/.cache/x/upd");
+        assert!(ask(1000, "block /home/me/.cache/x/upd").starts_with("ok already"));
+        assert!(ask(0, "block /usr/lib/systemd/systemd-resolved").starts_with("error"), "vital, even for root");
+        assert_eq!(rules::read(&file).len(), 1);
+        let _ = std::fs::remove_file(&file);
+    }
 }

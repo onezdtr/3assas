@@ -5,6 +5,10 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/3assas --db /var/lib/3assas/3assas.db --data /usr/local/share/3assas
 StateDirectory=3assas
+# /run/3assas/control.sock: the agent asks for blocks there. /etc/3assas/blocked: the list it edits.
+RuntimeDirectory=3assas
+RuntimeDirectoryMode=0755
+ReadWritePaths=-/etc/3assas
 StateDirectoryMode=0755
 UMask=0022
 Restart=always

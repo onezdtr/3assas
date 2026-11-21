@@ -1,6 +1,7 @@
 """3assas agent: runs 24/7 next to the tracer.
 
 Config (optional): ~/.config/3assas/gemini (API key), telegram + telegram_chat (bot token, chat id).
+The bot must be dedicated to 3assas: the agent reads its updates for the Block buttons.
 
 Every 30 s it reads the new events (read-only), flags what is new for each program (first time on the network,
 first contact with a country, large upload), asks an AI to judge each flag, and sends the ones that matter to
@@ -11,6 +12,7 @@ Usage: python3 agent.py            -> run forever (systemd: 3assas-agent.service
 """
 import json
 import os
+import socket
 import sqlite3
 import sys
 import threading
@@ -30,6 +32,7 @@ LEARN_MS = 24 * 3600 * 1000  # first day: learn what is normal, alert on nothing
 BIG_UPLOAD = 50_000_000  # bytes sent by one program within an hour
 REPORT_HOUR = 21
 CYCLE_S = 30
+CONTROL = os.environ.get("ASSAS_CONTROL", "/run/3assas/control.sock")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS seen(exe TEXT, what TEXT, value TEXT, first_t INTEGER, PRIMARY KEY (exe, what, value));
@@ -191,35 +194,106 @@ def judge(ev, ag, ids, now):
         ag.commit()
 
 
-def telegram(text):
-    """Bot token in ~/.config/3assas/telegram, chat id in telegram_chat. No bot, no message. Never raises."""
+def bot():
+    """(token, chat id) from ~/.config/3assas, or None when Telegram is not configured."""
     tok, chat = CONF / "telegram", CONF / "telegram_chat"
     if not (tok.exists() and chat.exists()):
-        return False
-    req = urllib.request.Request(f"https://api.telegram.org/bot{tok.read_text().strip()}/sendMessage",
-                                 json.dumps({"chat_id": int(chat.read_text().strip()), "text": text[:4000],
-                                             "disable_web_page_preview": True}).encode(),
+        return None
+    return tok.read_text().strip(), int(chat.read_text().strip())
+
+
+def api(method, payload, timeout=15):
+    token, _ = bot()
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/{method}", json.dumps(payload).encode(),
                                  {"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)["result"]
+
+
+def telegram(text, buttons=None):
+    """Sends to the configured chat, with optional inline buttons [(label, data)]. No bot, no message. Never raises."""
+    if not bot():
+        return False
+    msg = {"chat_id": bot()[1], "text": text[:4000], "disable_web_page_preview": True}
+    if buttons:
+        msg["reply_markup"] = {"inline_keyboard": [[{"text": t, "callback_data": d}] for t, d in buttons]}
     try:
-        urllib.request.urlopen(req, timeout=15)
+        api("sendMessage", msg)
         return True
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, KeyError) as e:
         print("telegram not sent:", e, flush=True)
         return False
+
+
+def block(exe):
+    """Asks the root tracer to block `exe` over its control socket. The tracer checks our uid itself."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(5)
+            s.connect(CONTROL)
+            s.sendall(f"block {exe}\n".encode())
+            return s.makefile().readline().strip() or "error: no answer"
+    except OSError as e:
+        return f"error: tracer unreachable ({e})"
+
+
+def on_button(ag, update, chat):
+    """Handles one Telegram update; returns the reply to show, or None to ignore it."""
+    q = update.get("callback_query")
+    if not q or q.get("from", {}).get("id") != chat:  # only the owner's taps count
+        return None
+    kind, _, alert = q.get("data", "").partition(":")
+    row = ag.execute("SELECT exe FROM alerts WHERE id = ?", (alert,)).fetchone() if kind == "block" else None
+    if not row:
+        return None
+    answer = block(row[0])
+    return f"⊘ {name(row[0])} blocked" if answer.startswith("ok") else f"Not blocked: {answer.removeprefix('error: ')}"
+
+
+def listen():
+    """Long-polls the bot for Block taps. Stops if another program reads the same bot (HTTP 409)."""
+    ag = open_agent()
+    offset = 0
+    while True:
+        try:
+            updates = api("getUpdates", {"offset": offset, "timeout": 50}, timeout=60)
+        except urllib.error.HTTPError as e:
+            if e.code == 409:
+                print("Block buttons off: another program reads this bot, give 3assas its own", flush=True)
+                return
+            time.sleep(10)
+            continue
+        except (OSError, ValueError, KeyError):
+            time.sleep(10)
+            continue
+        for u in updates:
+            offset = u["update_id"] + 1
+            reply = on_button(ag, u, bot()[1])
+            if reply:
+                print("button:", reply, flush=True)
+                try:
+                    api("answerCallbackQuery", {"callback_query_id": u["callback_query"]["id"], "text": reply[:190]})
+                except (OSError, ValueError, KeyError):
+                    pass
+                telegram(reply)
 
 
 ICON = {"suspicious": "🔴", "watch": "🟠", None: "⚪"}
 
 
 def notify(ag):
-    """One Telegram message per cycle with everything not judged normal."""
-    rows = ag.execute("SELECT id, verdict, detail, why FROM alerts WHERE notified = 0 ORDER BY id").fetchall()
+    """One Telegram message per cycle with everything not judged normal, and a Block button per program flagged."""
+    rows = ag.execute("SELECT id, verdict, detail, why, exe FROM alerts WHERE notified = 0 ORDER BY id").fetchall()
     worth = [r for r in rows if r[1] != "normal"]
     if worth:
-        lines = [f"{ICON.get(v, '⚪')} {d}" + (f"\n   {w}" if w else "") for _, v, d, w in worth[:10]]
+        lines = [f"{ICON.get(v, '⚪')} {d}" + (f"\n   {w}" if w else "") for _, v, d, w, _ in worth[:10]]
         if len(worth) > 10:
             lines.append(f"… and {len(worth) - 10} more on the page")
-        if not telegram("3assas\n\n" + "\n".join(lines)):
+        buttons = {}
+        for i, v, _, _, exe in worth:
+            if v in ("suspicious", "watch") and exe not in buttons and len(buttons) < 4:
+                buttons[exe] = (f"⊘ Block {name(exe)}", f"block:{i}")
+        if not telegram("3assas\n\n" + "\n".join(lines), list(buttons.values())):
             return  # retry next cycle
     ag.executemany("UPDATE alerts SET notified = 1 WHERE id = ?", [(r[0],) for r in rows])
     ag.commit()
@@ -270,6 +344,8 @@ def main():
         print(report(open_events(), ag, now_ms()))
         return
     threading.Thread(target=web.serve, args=(DB, AGENT_DB), daemon=True).start()
+    if bot():
+        threading.Thread(target=listen, daemon=True).start()
     print(f"3assas agent: watching {DB}, page on http://{web.HOST}:{web.PORT}", flush=True)
     while True:
         try:
