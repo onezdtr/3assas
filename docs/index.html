@@ -71,7 +71,7 @@ section { padding: 120px 0 0; }
 h2 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.08; letter-spacing: -.035em; font-weight: 620; margin: 12px 0 18px; max-width: 20ch; }
 .sub { color: var(--muted); max-width: 56ch; font-size: 17px; }
 
-.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-top: 44px; }
+.grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-top: 44px; }
 .cell { background: var(--bg); padding: 28px 26px 30px; }
 .cell h3 { font-size: 16px; font-weight: 600; margin: 14px 0 8px; letter-spacing: -.01em; }
 .cell p { color: var(--muted); font-size: 15px; }
@@ -160,6 +160,11 @@ footer a { color: var(--muted); text-decoration: none; }
         <h3>An agent that knows normal</h3>
         <p>It learns your machine for a day, then flags a program's first connection, a new country or a big upload. An AI judges each one; Telegram gets what matters.</p>
       </div>
+      <div class="cell">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>
+        <h3>Block it in one command</h3>
+        <p><code>sudo 3assas block ~/.cache/x/upd</code> and the kernel refuses that program any network socket, live, without touching the rest. Unblock just as fast.</p>
+      </div>
     </div>
     <div class="shot"><img src="demo.gif" width="1200" height="760" alt="The 3assas web page: programs and their destinations, alerts judged by the agent, and a live feed of connections" loading="lazy"></div>
     <p class="caption">The local web page on 127.0.0.1:4545. Demo data: a hidden binary uploading to an unknown host gets flagged, a browser reaching a new CDN does not.</p>
@@ -204,6 +209,7 @@ const LINES = [
   ["21:41:12", "→", "c", "TCP", "python3  ", "149.154.167.220:443    ", "api.telegram.org · Telegram · GB"],
   ["21:41:15", "✗", "bad", "TCP", "updater  ", "45.142.212.61:8443     ", "no answer after 2.0s"],
   ["21:41:16", "→", "c", "TCP", ".cache/x ", "185.220.101.4:443      ", "first time on the network · RU"],
+  ["21:41:31", "⊘", "bad", "UDP", ".cache/x ", "-                      ", "blocked: socket refused"],
 ];
 const box = document.getElementById("lines");
 function row([t, sign, cls, proto, prog, dest, what], i) {

@@ -36,6 +36,19 @@ sudo rm -rf /opt/3assas /usr/local/bin/3assas /usr/local/share/3assas /var/lib/3
 rm -rf ~/.local/share/3assas   # agent history
 ```
 
+## Block a program
+
+```sh
+sudo 3assas block ~/.cache/x/upd     # refused any network socket from now on
+sudo 3assas unblock ~/.cache/x/upd
+3assas blocked                       # the list (/etc/3assas/blocked)
+```
+
+The running service applies changes within a second, no restart. The kernel refuses the program's IPv4/IPv6
+sockets at creation (`socket()` fails with `EPERM`), so TCP, UDP, QUIC and DNS lookups all stop; Unix sockets
+(D-Bus, display) keep working. Programs that keep the machine online (systemd's resolver and network daemons,
+NetworkManager, wpa_supplicant, sshd, tailscaled) and 3assas itself cannot be blocked.
+
 ## How it works
 
 | Hook | What it catches | Cost |
@@ -44,6 +57,7 @@ rm -rf ~/.local/share/3assas   # agent history
 | `tp_btf/inet_sock_set_state` → `CLOSE` | duration, payload bytes both ways, failed handshakes | once per connection |
 | `fentry/udp_sendmsg`, `udpv6_sendmsg` | UDP flows (QUIC, DNS, games) | map lookup per send, event once per flow / 30 s |
 | `cgroup_skb/ingress` on the root cgroup | DNS answers (UDP from port 53), copied raw to userspace | 2 header reads per received packet |
+| `lsm/socket_create` | blocks listed executables | one load per socket while the list is empty |
 
 Design choices:
 - **No per-packet path for TCP.** Byte counts are read from `tcp_sock` once at close (`bytes_sent - bytes_retrans`,
@@ -58,6 +72,11 @@ Design choices:
   network) and tags each address with the name that was *asked*, not the CDN alias at the end of the CNAME chain.
   Seen on loopback too, so it works behind systemd-resolved. Not seen: DNS-over-HTTPS/TLS and DNS over TCP; the
   connection then keeps its IP, owner and country.
+- **Blocking by full path, decided at `socket()`.** The LSM hook gets the caller's executable
+  (`bpf_get_task_exe_file`) and its path (`bpf_path_d_path`), then looks it up in a hash map the service syncs from
+  `/etc/3assas/blocked`. Paths rather than inode numbers: btrfs subvolumes share one device, so `(dev, ino)` can name
+  two different files. A `.bss` flag skips all of it while the list is empty. Needs the BPF LSM (`bpf` in
+  `/sys/kernel/security/lsm`) and Linux 6.12+; without them 3assas still traces, and says blocking is off.
 - **The observer reports its blind spots.** A per-CPU counter tracks events lost to a full ring buffer or map, and the
   summary says so.
 
@@ -99,7 +118,7 @@ sudo ./target/release/3assas            # --json, --all (include loopback)
 sudo ./install.sh     # builds, installs and starts both services at boot
 ```
 
-- `3assas.service` (root, capabilities bounded to BPF/PERFMON/NET_ADMIN/PTRACE): `3assas --db /var/lib/3assas/3assas.db` writes
+- `3assas.service` (root, capabilities bounded to BPF/PERFMON/NET_ADMIN/PTRACE, `/etc` read-only): `3assas --db /var/lib/3assas/3assas.db` writes
   every event to SQLite (WAL, one transaction per batch, 30-day retention).
 - `3assas-agent.service` (your user, read-only on the tracer database): every 30 s it flags a program's first time on
   the network, its first contact with a country, or more than 50 MB sent in an hour. An AI (Gemini) judges each flag
@@ -131,6 +150,8 @@ python3 docs/demo/gen.py    # the real page on http://127.0.0.1:8056 with a fake
 ## Limits
 
 - Outbound only; sockets opened before 3assas started are not seen.
+- Blocking applies to new sockets: connections a program already holds stay open until it closes them. A blocked
+  program can still get network through another one (a socket passed over a Unix socket, a helper process).
 - UDP bytes are sent bytes, sampled every 30 s per flow; the tail of a flow after its last report is not counted.
 - Country is a geolocation guess and the network owner is the ASN, not the service (a CDN hides the real site).
 

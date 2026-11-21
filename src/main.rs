@@ -1,6 +1,7 @@
 mod dns;
 mod event;
 mod geo;
+mod rules;
 mod store;
 
 use std::{
@@ -22,12 +23,12 @@ use libbpf_rs::{
     skel::{OpenSkel, Skel, SkelBuilder},
 };
 
-use event::{EV_CLOSE, EV_CONNECT, RawEvent};
+use event::{EV_BLOCKED, EV_CLOSE, EV_CONNECT, RawEvent};
 
 mod tracer {
     include!(concat!(env!("OUT_DIR"), "/tracer.skel.rs"));
 }
-use tracer::TracerSkelBuilder;
+use tracer::{TracerSkel, TracerSkelBuilder};
 
 /// What the shared ring buffer carries: a connection event or a raw DNS answer.
 enum Msg {
@@ -46,6 +47,8 @@ struct Opts {
     all: bool,
     data: PathBuf,
     db: Option<PathBuf>,
+    rules: PathBuf,
+    cmd: Option<(String, Option<String>)>,
 }
 
 fn opts() -> Result<Opts> {
@@ -54,6 +57,8 @@ fn opts() -> Result<Opts> {
         all: false,
         data: PathBuf::from("data"),
         db: None,
+        rules: PathBuf::from(rules::DEFAULT_FILE),
+        cmd: None,
     };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -62,9 +67,11 @@ fn opts() -> Result<Opts> {
             "--all" => o.all = true,
             "--data" => o.data = args.next().context("--data needs a directory")?.into(),
             "--db" => o.db = Some(args.next().context("--db needs a file")?.into()),
+            "--rules" => o.rules = args.next().context("--rules needs a file")?.into(),
+            "block" | "unblock" | "blocked" => o.cmd = Some((a.clone(), args.next())),
             "-h" | "--help" => {
                 println!(
-                    "usage: 3assas [--json] [--all] [--data DIR] [--db FILE]\n  --db    service mode: store events in SQLite, print nothing\n  --json  one JSON object per line\n  --all   include loopback traffic\n  --data  directory with dbip-country.csv.gz and ip2asn.tsv.gz (default: ./data)"
+                    "usage: 3assas [--json] [--all] [--data DIR] [--db FILE] [--rules FILE]\n       3assas block PATH | unblock PATH | blocked\n  block   deny network sockets to an executable (kept in /etc/3assas/blocked, applied live)\n  --db    service mode: store events in SQLite, print nothing\n  --json  one JSON object per line\n  --all   include loopback traffic\n  --data  directory with dbip-country.csv.gz and ip2asn.tsv.gz (default: ./data)"
                 );
                 std::process::exit(0);
             }
@@ -144,6 +151,46 @@ impl Exes {
     }
 }
 
+/// Mirrors the block list file into the kernel map whenever the file changes.
+#[derive(Default)]
+struct Blocker {
+    seen: Option<(SystemTime, u64)>,
+    applied: std::collections::BTreeSet<String>,
+}
+
+impl Blocker {
+    fn sync(&mut self, file: &Path, map: &libbpf_rs::Map, flag: Option<&mut tracer::types::bss>) {
+        let stamp = std::fs::metadata(file).ok().map(|m| (m.modified().unwrap_or(UNIX_EPOCH), m.len()));
+        if stamp == self.seen && self.seen.is_some() {
+            return;
+        }
+        self.seen = stamp;
+        let want = rules::read(file);
+        for p in self.applied.difference(&want) {
+            if let Some(k) = rules::key(p) {
+                let _ = map.delete(&k);
+            }
+        }
+        let mut applied = std::collections::BTreeSet::new();
+        for p in &want {
+            match rules::key(p).map(|k| map.update(&k, &[1u8], MapFlags::ANY)) {
+                Some(Ok(())) => {
+                    applied.insert(p.clone());
+                }
+                _ => eprintln!("warning: cannot block {p}"),
+            }
+        }
+        if applied != self.applied {
+            eprintln!("block list: {} program(s)", applied.len());
+        }
+        if let Some(f) = flag {
+            // SAFETY: f points into the BPF program's mmapped .bss; a volatile store is what the kernel side reads.
+            unsafe { std::ptr::write_volatile(&mut f.blocking, !applied.is_empty() as u32) };
+        }
+        self.applied = applied;
+    }
+}
+
 #[derive(Default)]
 struct Stat {
     conns: u64,
@@ -153,8 +200,21 @@ struct Stat {
     countries: HashSet<String>,
 }
 
+/// The socket blocker needs the BPF LSM (`bpf` in the kernel's LSM list) and Linux 6.12+ kfuncs.
+/// Without them everything else still loads: tracing must not depend on blocking.
+fn load_bpf<'o>(obj: &'o mut MaybeUninit<libbpf_rs::OpenObject>, blocker: bool) -> Result<TracerSkel<'o>> {
+    let mut open = TracerSkelBuilder::default().open(obj)?;
+    if !blocker {
+        open.progs.on_socket_create.set_autoload(false);
+    }
+    Ok(open.load()?)
+}
+
 fn main() -> Result<()> {
     let o = opts()?;
+    if let Some((cmd, arg)) = &o.cmd {
+        return rules::command(cmd, arg.as_deref(), &o.rules);
+    }
     // SAFETY: geteuid has no preconditions.
     if unsafe { libc::geteuid() } != 0 {
         bail!("3assas loads eBPF programs into the kernel: run it as root (sudo)");
@@ -162,11 +222,22 @@ fn main() -> Result<()> {
     let countries = load(&o.data.join("dbip-country.csv.gz"), geo::countries);
     let owners = load(&o.data.join("ip2asn.tsv.gz"), geo::owners);
 
+    let lsm = std::fs::read_to_string("/sys/kernel/security/lsm").unwrap_or_default();
     let mut obj = MaybeUninit::uninit();
-    let mut skel = TracerSkelBuilder::default()
-        .open(&mut obj)?
-        .load()
-        .context("load BPF program")?;
+    let mut fallback = MaybeUninit::uninit();
+    let mut can_block = lsm.split(',').any(|m| m.trim() == "bpf");
+    let mut skel = match load_bpf(&mut obj, can_block) {
+        Ok(s) => s,
+        Err(e) if can_block => {
+            eprintln!("warning: blocking disabled, the kernel refused the blocker ({e:#}); needs Linux 6.12+");
+            can_block = false;
+            load_bpf(&mut fallback, false).context("load BPF program")?
+        }
+        Err(e) => return Err(e.context("load BPF program")),
+    };
+    if !can_block {
+        eprintln!("warning: blocking disabled: the BPF LSM is not active (add bpf to the lsm= boot parameter)");
+    }
     skel.attach().context("attach BPF program")?;
     // The DNS watcher needs a cgroup v2 root; without one, connections just come unnamed.
     let _dns = std::fs::File::open("/sys/fs/cgroup")
@@ -174,6 +245,10 @@ fn main() -> Result<()> {
         .and_then(|cg| Ok(skel.progs.on_ingress.attach_cgroup(cg.as_raw_fd())?))
         .map_err(|e| eprintln!("warning: DNS watcher not attached ({e:#}), domains disabled"))
         .ok();
+
+    // Taken out before the ring buffer borrows the skeleton's maps.
+    let mut blocking_flag = skel.maps.bss_data.take();
+    let mut blocker = Blocker::default();
 
     let (tx, rx) = mpsc::channel();
     let mut rb = RingBufferBuilder::new();
@@ -225,6 +300,9 @@ fn main() -> Result<()> {
         // EINTR on Ctrl-C is expected: the loop condition handles it.
         let _ = rb.poll(Duration::from_millis(200));
         let now_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64;
+        if can_block {
+            blocker.sync(&o.rules, &skel.maps.blocked, blocking_flag.as_deref_mut());
+        }
         for m in rx.try_iter() {
             let e = match m {
                 Msg::Conn(e) => e,
@@ -235,12 +313,15 @@ fn main() -> Result<()> {
             };
             let ip = e.addr();
             let domain = names.get(ip).map(String::from);
-            if !o.all && (ip.is_loopback() || ip.is_unspecified()) {
+            let blocked = e.kind == EV_BLOCKED; // refused at socket(), before any address exists
+            if !blocked && !o.all && (ip.is_loopback() || ip.is_unspecified()) {
                 continue;
             }
             let comm = e.comm();
             let exe = exes.get(e.tgid, &comm);
-            let (owner, cc) = if is_local(ip) {
+            let (owner, cc) = if blocked {
+                (None, None)
+            } else if is_local(ip) {
                 (Some("local network"), None)
             } else {
                 (
@@ -253,6 +334,7 @@ fn main() -> Result<()> {
                 kind: match e.kind {
                     EV_CONNECT => "connect",
                     EV_CLOSE => "close",
+                    EV_BLOCKED => "blocked",
                     _ => "udp",
                 },
                 proto: e.proto(),
@@ -260,7 +342,7 @@ fn main() -> Result<()> {
                 uid: e.uid,
                 comm,
                 exe,
-                ip: ip.to_string(),
+                ip: if blocked { String::new() } else { ip.to_string() },
                 port: e.dport,
                 owner: owner.map(String::from),
                 country: cc.map(String::from),
@@ -276,7 +358,7 @@ fn main() -> Result<()> {
                 continue;
             }
             let s = stats.entry(r.exe.clone()).or_default();
-            if e.kind != EV_CLOSE {
+            if e.kind != EV_CLOSE && !blocked {
                 s.conns += 1;
                 s.dests.insert(ip);
                 s.countries.extend(r.country.clone());
@@ -298,6 +380,7 @@ fn main() -> Result<()> {
                 .file_name()
                 .map_or(r.exe.clone(), |n| n.to_string_lossy().into_owned());
             let dest = match ip {
+                _ if blocked => "-".to_owned(),
                 IpAddr::V6(_) => format!("[{ip}]:{}", e.dport),
                 _ => format!("{ip}:{}", e.dport),
             };
@@ -309,6 +392,7 @@ fn main() -> Result<()> {
                 .join(" · ");
             let detail = match e.kind {
                 EV_CONNECT => label,
+                EV_BLOCKED => "blocked: socket refused".to_owned(),
                 EV_CLOSE if e.failed() => {
                     format!("no answer after {:.1}s", e.duration_ns as f64 / 1e9)
                 }
@@ -322,6 +406,7 @@ fn main() -> Result<()> {
             };
             let arrow = match e.kind {
                 EV_CONNECT => "→",
+                EV_BLOCKED => "⊘",
                 EV_CLOSE if e.failed() => "✗",
                 EV_CLOSE => "✓",
                 _ => "↗",

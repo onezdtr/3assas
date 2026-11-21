@@ -180,10 +180,11 @@ function render(s) {
   $("report-time").textContent = s.report ? new Date(s.report.t).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" }) : "";
 
   $("feed").replaceChildren(...s.feed.map(e => {
-    const fail = e.kind === "close" && e.failed;
-    const sign = { connect: "→", close: fail ? "✗" : "✓", udp: "↗" }[e.kind];
-    const dest = e.domain ? e.domain + ":" + e.port : (e.ip.includes(":") ? "[" + e.ip + "]" : e.ip) + ":" + e.port;
-    const what = e.kind === "connect" ? [e.owner, e.country].filter(Boolean).join(" · ")
+    const blocked = e.kind === "blocked";
+    const fail = (e.kind === "close" && e.failed) || blocked;
+    const sign = { connect: "→", close: fail ? "✗" : "✓", udp: "↗", blocked: "⊘" }[e.kind];
+    const dest = blocked ? "—" : e.domain ? e.domain + ":" + e.port : (e.ip.includes(":") ? "[" + e.ip + "]" : e.ip) + ":" + e.port;
+    const what = blocked ? "blocked by you: socket refused" : e.kind === "connect" ? [e.owner, e.country].filter(Boolean).join(" · ")
       : fail ? "no answer" : e.kind === "close" ? (e.duration_ms / 1000).toFixed(1) + "s  ↑" + human(e.sent) + "  ↓" + human(e.recv)
       : "↑" + human(e.sent) + "  " + [e.owner, e.country].filter(Boolean).join(" · ");
     return h("tr", {}, h("td", { class: "faint" }, clock(e.t)), h("td", { class: "k " + (fail ? "fail" : e.kind) }, sign),

@@ -122,7 +122,7 @@ def ingest(ev, ag, now):
                              WHERE rowid > ? ORDER BY rowid LIMIT 5000""", (cursor,)).fetchall()
         for rowid, t, kind, exe, ip, port, owner, cc, domain in rows:
             cursor = rowid
-            if kind == "close":
+            if kind in ("close", "blocked"):  # blocked: refused before reaching anything
                 continue
             labels = ", ".join(x for x in (owner, cc) if x)
             where = (f"{domain} " if domain else "") + f"{ip}:{port}" + (f" ({labels})" if labels else "")
@@ -227,7 +227,7 @@ def notify(ag):
 
 def report(ev, ag, now):
     since = now - 86400 * 1000
-    progs = ev.execute("""SELECT exe, SUM(kind != 'close'), SUM(sent), SUM(recv) FROM events WHERE t >= ?
+    progs = ev.execute("""SELECT exe, SUM(kind IN ('connect', 'udp')), SUM(sent), SUM(recv) FROM events WHERE t >= ?
                           GROUP BY exe ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 25""", (since,)).fetchall()
     places = profile(ev, [p[0] for p in progs], since)
     data = {"programs": [{"program": e, "connections": c, "sent": s, "received": r, "main_destinations": places[e][:6]}

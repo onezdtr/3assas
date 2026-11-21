@@ -38,6 +38,7 @@ class Ingest(unittest.TestCase):
         self.assertEqual(self.kinds(), ["new_country", "new_program"])
 
         add(self.ev, t + 1, "/usr/bin/curl", country="CN")  # already seen: nothing
+        add(self.ev, t + 1, "/tmp/blocked", country=None, kind="blocked")  # refused by the user's block list: nothing
         agent.ingest(self.ev, self.ag, t + 1)
         self.assertEqual(len(self.kinds()), 2)
 

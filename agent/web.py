@@ -24,10 +24,10 @@ def state(ev_path, ag_path, now):
     ev = sqlite3.connect(f"file:{ev_path}?mode=ro", uri=True, timeout=5)
     try:
         meta = dict(ev.execute("SELECT key, value FROM meta"))
-        total = rows(ev, """SELECT COALESCE(SUM(kind != 'close'), 0), COUNT(DISTINCT exe), COALESCE(SUM(sent), 0),
+        total = rows(ev, """SELECT COALESCE(SUM(kind IN ('connect', 'udp')), 0), COUNT(DISTINCT exe), COALESCE(SUM(sent), 0),
                                    COALESCE(SUM(recv), 0), COUNT(DISTINCT country) FROM events WHERE t >= ?""",
                      (day,), ("connections", "programs", "sent", "recv", "countries"))[0]
-        programs = rows(ev, """SELECT exe, SUM(kind != 'close'), COUNT(DISTINCT ip), SUM(sent), SUM(recv),
+        programs = rows(ev, """SELECT exe, SUM(kind IN ('connect', 'udp')), COUNT(DISTINCT NULLIF(ip, '')), SUM(sent), SUM(recv),
                                       GROUP_CONCAT(DISTINCT country), MAX(t)
                                FROM events WHERE t >= ? GROUP BY exe ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 60""",
                         (day,), ("exe", "connections", "dests", "sent", "recv", "countries", "last"))
@@ -55,7 +55,7 @@ def state(ev_path, ag_path, now):
 def program(ev_path, exe, now):
     ev = sqlite3.connect(f"file:{ev_path}?mode=ro", uri=True, timeout=5)
     try:
-        return rows(ev, """SELECT domain, COALESCE(owner, '?'), country, COUNT(DISTINCT ip), SUM(kind != 'close'),
+        return rows(ev, """SELECT domain, COALESCE(owner, '?'), country, COUNT(DISTINCT NULLIF(ip, '')), SUM(kind IN ('connect', 'udp')),
                                   SUM(sent), SUM(recv), MAX(t)
                            FROM events WHERE exe = ? AND t >= ? GROUP BY 1, 2, 3 ORDER BY SUM(sent) + SUM(recv) DESC LIMIT 40""",
                     (exe, now - 86400 * 1000), ("domain", "owner", "country", "ips", "connections", "sent", "recv", "last"))

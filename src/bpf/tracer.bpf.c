@@ -24,8 +24,17 @@
 #define DNS_MAX 1232
 
 #define UDP_REPORT_NS (30ULL * 1000000000ULL)
+#define BLOCK_REPORT_NS 1000000000ULL
+#define EPERM 1
+#define PATH_LEN 256
 
-enum kind { EV_CONNECT = 1, EV_CLOSE = 2, EV_UDP = 3 };
+enum kind { EV_CONNECT = 1, EV_CLOSE = 2, EV_UDP = 3, EV_BLOCKED = 4 };
+
+// Linux 6.12+ kfuncs for LSM programs. Weak: on older kernels the blocker is not loaded
+// (userspace disables it) and the rest of the object must still load.
+extern struct file *bpf_get_task_exe_file(struct task_struct *task) __ksym __weak;
+extern void bpf_put_file(struct file *file) __ksym __weak;
+extern int bpf_path_d_path(const struct path *path, char *buf, size_t buf__sz) __ksym __weak;
 
 // Shared with userspace (src/event.rs). Keep the layout in sync: 80 bytes, no implicit padding.
 struct event {
@@ -91,6 +100,30 @@ struct {
 	__type(key, struct udp_key);
 	__type(value, struct udp_val);
 } udp_flows SEC(".maps");
+
+// Executables denied network sockets, by full path (zero-padded). Paths, not inode numbers:
+// btrfs subvolumes share one device, so (dev, ino) can name two different files.
+struct path_key {
+	char p[PATH_LEN];
+};
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 1024);
+	__type(key, struct path_key);
+	__type(value, u8);
+} blocked SEC(".maps");
+
+// Last report per process, so a program retrying in a loop cannot flood the ring buffer.
+struct {
+	__uint(type, BPF_MAP_TYPE_LRU_HASH);
+	__uint(max_entries, 4096);
+	__type(key, u32);
+	__type(value, u64);
+} block_reports SEC(".maps");
+
+// Set by userspace while the block list is non-empty: an empty list costs one load per socket.
+volatile u32 blocking;
 
 // Events lost because the ring buffer or the owners map was full: the observer must report its blind spots.
 struct {
@@ -305,6 +338,47 @@ int on_ingress(struct __sk_buff *skb)
 	e->_pad = 0;
 	bpf_ringbuf_submit(e, 0);
 	return 1;
+}
+
+// Deny IPv4/IPv6 socket creation to blocked executables. Once per socket, not per packet, and it
+// covers TCP, UDP, QUIC and raw sockets alike. Unix sockets (D-Bus, X11, Wayland) stay allowed.
+SEC("lsm/socket_create")
+int BPF_PROG(on_socket_create, int family, int type, int protocol, int kern, int ret)
+{
+	if (ret || kern || !blocking || (family != AF_INET && family != AF_INET6))
+		return ret;
+	struct file *exe = bpf_get_task_exe_file(bpf_get_current_task_btf());
+	if (!exe)
+		return 0;
+	struct path_key k = {};
+	int n = bpf_path_d_path(&exe->f_path, k.p, sizeof(k.p));
+	bpf_put_file(exe);
+	if (n <= 0)
+		return 0;
+	// d_path builds the string at the end of the buffer and the kfunc moves it to the front without
+	// clearing the tail, so the leftover copy must be wiped or the key never matches the map's.
+	for (int i = 0; i < PATH_LEN; i++)
+		if (i >= n)
+			k.p[i] = 0;
+	if (!bpf_map_lookup_elem(&blocked, &k))
+		return 0;
+
+	u64 id = bpf_get_current_pid_tgid();
+	u32 tgid = id >> 32;
+	u64 now = bpf_ktime_get_ns();
+	u64 *last = bpf_map_lookup_elem(&block_reports, &tgid);
+	if (!last || now - *last >= BLOCK_REPORT_NS) {
+		bpf_map_update_elem(&block_reports, &tgid, &now, BPF_ANY);
+		struct event *e = reserve(EV_BLOCKED, (type & 0xf) == 1 ? PROTO_TCP : PROTO_UDP);
+		if (e) {
+			e->tgid = tgid;
+			e->uid = (u32)bpf_get_current_uid_gid();
+			e->family = family;
+			bpf_get_current_comm(e->comm, sizeof(e->comm));
+			bpf_ringbuf_submit(e, 0);
+		}
+	}
+	return -EPERM;
 }
 
 char LICENSE[] SEC("license") = "GPL";

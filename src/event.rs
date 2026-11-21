@@ -24,6 +24,7 @@ const _: () = assert!(std::mem::size_of::<RawEvent>() == 80);
 
 pub const EV_CONNECT: u8 = 1;
 pub const EV_CLOSE: u8 = 2;
+pub const EV_BLOCKED: u8 = 4;
 const AF_INET: u16 = 2;
 const TCP_SYN_SENT: u8 = 2;
 

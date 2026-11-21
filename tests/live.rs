@@ -118,3 +118,63 @@ fn names_a_connection_from_the_dns_answer_before_it() {
     unsafe { libc::kill(tracer.id() as i32, libc::SIGINT) };
     tracer.wait().unwrap();
 }
+
+/// The block list reaches the kernel live: a copy of curl is refused a socket while listed,
+/// gets through once unlisted, and the original curl is never touched.
+#[test]
+#[ignore = "needs root (loads eBPF) and the BPF LSM"]
+fn blocks_a_listed_program_then_lets_it_go() {
+    let lsm = std::fs::read_to_string("/sys/kernel/security/lsm").unwrap_or_default();
+    if !lsm.split(',').any(|m| m.trim() == "bpf") {
+        eprintln!("skipped: BPF LSM not active");
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("3assas-block-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let curl = dir.join("curl");
+    std::fs::copy("/usr/bin/curl", &curl).expect("curl is needed for this test");
+    let rules = dir.join("blocked");
+    std::fs::write(&rules, format!("{}\n", curl.display())).unwrap();
+
+    // Minimal HTTP server: any request gets a 200.
+    let server = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://127.0.0.1:{}/", server.local_addr().unwrap().port());
+    thread::spawn(move || {
+        for mut s in server.incoming().map_while(Result::ok) {
+            let _ = s.read(&mut [0u8; 1024]);
+            let _ = s.write_all(b"HTTP/1.0 200 OK\r\nContent-Length: 0\r\n\r\n");
+        }
+    });
+    let fetch = |bin: &std::path::Path| {
+        Command::new(bin).args(["-s", "-m", "3", "-o", "/dev/null", &url]).status().unwrap().code()
+    };
+
+    let mut tracer = Command::new(env!("CARGO_BIN_EXE_3assas"))
+        .args(["--json", "--all", "--rules", rules.to_str().unwrap()])
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("start 3assas");
+    let (tx, rx) = mpsc::channel();
+    let out = tracer.stdout.take().unwrap();
+    thread::spawn(move || {
+        for line in BufReader::new(out).lines().map_while(Result::ok) {
+            let _ = tx.send(serde_json::from_str::<serde_json::Value>(&line).unwrap());
+        }
+    });
+    thread::sleep(Duration::from_secs(2));
+
+    assert_eq!(fetch(&curl), Some(7), "listed copy must fail to open a socket");
+    assert_eq!(fetch(std::path::Path::new("/usr/bin/curl")), Some(0), "original curl must pass");
+    thread::sleep(Duration::from_millis(500));
+    let blocked: Vec<_> = rx.try_iter().filter(|v| v["event"] == "blocked").collect();
+    assert!(blocked.iter().any(|v| v["exe"] == curl.to_str().unwrap()), "no blocked event: {blocked:?}");
+
+    std::fs::write(&rules, "").unwrap();
+    thread::sleep(Duration::from_secs(1)); // the tracer checks the file every 200 ms
+    assert_eq!(fetch(&curl), Some(0), "unlisted copy must pass again");
+
+    // SAFETY: plain kill(2) on our own child.
+    unsafe { libc::kill(tracer.id() as i32, libc::SIGINT) };
+    tracer.wait().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+}
