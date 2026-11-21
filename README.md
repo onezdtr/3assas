@@ -17,6 +17,25 @@ reaching a new CDN region does not.</sub>
 DNS-level blockers only see names. 3assas sees every outbound TCP connection and UDP flow, attributed to the
 executable that opened it: hardcoded IPs, DNS-over-HTTPS, QUIC, apps that never ask your resolver.
 
+## Install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/onezdtr/3assas/main/get.sh | sudo sh
+```
+
+Prebuilt for x86_64 and aarch64 (glibc ≥ 2.35, Linux ≥ 5.11 with BTF, python3). The script downloads the latest
+[release](https://github.com/onezdtr/3assas/releases), checks its SHA-256, puts it in `/opt/3assas` and starts both
+services; run it again to update. Website: [onezdtr.github.io/3assas](https://onezdtr.github.io/3assas/).
+
+Uninstall:
+
+```sh
+sudo systemctl disable --now 3assas 3assas-agent
+sudo rm -rf /opt/3assas /usr/local/bin/3assas /usr/local/share/3assas /var/lib/3assas \
+  /etc/systemd/system/3assas.service /etc/systemd/system/3assas-agent.service
+rm -rf ~/.local/share/3assas   # agent history
+```
+
 ## How it works
 
 | Hook | What it catches | Cost |
@@ -62,7 +81,7 @@ send, `on_tcp_state` 839 ns per TCP state change (averaged over the cheap early 
 events that reserve ring buffer space). Only the UDP send path is measurable, and only when nothing else is: a real
 network adds milliseconds where 3assas adds a fraction of a microsecond.
 
-## Run
+## Build from source
 
 Linux ≥ 5.11 with BTF (`/sys/kernel/btf/vmlinux`), clang, bpftool, libelf.
 

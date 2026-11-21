@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3assas — see which program talks to whom</title>
+<meta name="description" content="3assas watches every outbound connection from inside the Linux kernel (eBPF), names it, and tells you when something new phones home. Open source.">
+<meta property="og:title" content="3assas">
+<meta property="og:description" content="See which program on your Linux machine talks to whom, from inside the kernel.">
+<meta property="og:image" content="https://onezdtr.github.io/3assas/demo.gif">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%230b0d10'/><circle cx='16' cy='16' r='5' fill='%23f2b84b'/><circle cx='16' cy='16' r='10' fill='none' stroke='%23f2b84b' stroke-width='2' opacity='.45'/></svg>">
+<style>
+:root {
+  --bg: #0b0d10;
+  --panel: #12151a;
+  --line: #20252d;
+  --text: #e8eaed;
+  --muted: #8b939e;
+  --faint: #7a828d;
+  --accent: #f2b84b;
+  --ok: #5fcf8a;
+  --bad: #ef6b6b;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+}
+* { box-sizing: border-box; margin: 0; }
+html { background: var(--bg); color: var(--text); font: 16px/1.55 var(--sans); -webkit-font-smoothing: antialiased; }
+body { background: var(--bg); overflow-x: hidden; }
+a { color: inherit; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+
+nav { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+.logo { display: flex; align-items: center; gap: 10px; font-weight: 600; letter-spacing: -.01em; text-decoration: none; }
+.logo i { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(242, 184, 75, .16); }
+nav .links { display: flex; gap: 22px; font-size: 14px; color: var(--muted); }
+nav .links a { text-decoration: none; }
+nav .links a:hover { color: var(--text); }
+
+.hero { padding: 96px 0 56px; text-align: center; }
+.tag { display: inline-flex; gap: 8px; align-items: center; font: 13px var(--mono); color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
+.tag b { color: var(--accent); font-weight: 500; }
+h1 { font-size: clamp(40px, 7.4vw, 76px); line-height: 1.02; letter-spacing: -.045em; font-weight: 650; margin: 26px auto 22px; max-width: 13ch; }
+h1 span { color: var(--accent); }
+.lead { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 40ch; margin: 0 auto; }
+
+.install { margin: 40px auto 0; max-width: 860px; display: flex; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 6px 6px 6px 18px; text-align: left; }
+.install code { flex: 1; font: 14px var(--mono); white-space: nowrap; overflow-x: auto; scrollbar-width: none; padding: 10px 0; }
+.install code::-webkit-scrollbar { display: none; }
+.install code span { color: var(--faint); user-select: none; }
+.install button { flex: none; margin-left: 12px; font: 500 14px var(--sans); color: var(--bg); background: var(--text); border: 0; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
+.install button:hover { background: #fff; }
+.install button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.meta { margin-top: 14px; font-size: 13px; color: var(--faint); }
+.meta a { color: var(--muted); }
+
+.term { margin: 72px auto 0; max-width: 920px; background: #08090b; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; text-align: left; }
+.bar { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+.bar i { width: 11px; height: 11px; border-radius: 50%; background: #262b33; }
+.bar span { margin-left: 10px; font: 12px var(--mono); color: var(--faint); }
+.lines { padding: 18px 20px 22px; font: 13.5px/1.9 var(--mono); overflow-x: auto; }
+.lines div { white-space: pre; opacity: 0; animation: in .35s ease forwards; }
+.lines .t { color: var(--faint); }
+.lines .c { color: var(--accent); }
+.lines .ok { color: var(--ok); }
+.lines .bad { color: var(--bad); }
+.lines .m { color: var(--muted); }
+@keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+section { padding: 120px 0 0; }
+.eyebrow { font: 13px var(--mono); color: var(--accent); }
+h2 { font-size: clamp(28px, 4.4vw, 44px); line-height: 1.08; letter-spacing: -.035em; font-weight: 620; margin: 12px 0 18px; max-width: 20ch; }
+.sub { color: var(--muted); max-width: 56ch; font-size: 17px; }
+
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; margin-top: 44px; }
+.cell { background: var(--bg); padding: 28px 26px 30px; }
+.cell h3 { font-size: 16px; font-weight: 600; margin: 14px 0 8px; letter-spacing: -.01em; }
+.cell p { color: var(--muted); font-size: 15px; }
+.cell svg { width: 22px; height: 22px; stroke: var(--accent); fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+
+.shot { margin-top: 44px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--panel); }
+.shot img { display: block; width: 100%; height: auto; }
+.caption { margin-top: 12px; font-size: 13px; color: var(--faint); }
+
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; margin-top: 48px; }
+.stat b { display: block; font-size: clamp(40px, 6vw, 60px); line-height: 1; letter-spacing: -.04em; font-weight: 600; }
+.stat span { display: block; margin-top: 12px; color: var(--muted); font-size: 15px; max-width: 26ch; }
+
+.cta { margin: 140px 0 0; padding: 64px 32px; border: 1px solid var(--line); border-radius: 18px; text-align: center; background: var(--panel); }
+.cta h2 { margin: 0 auto 14px; }
+.cta .install { background: var(--bg); }
+.row { display: flex; justify-content: center; gap: 12px; margin-top: 24px; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 500; text-decoration: none; padding: 11px 18px; border-radius: 10px; border: 1px solid var(--line); }
+.btn:hover { border-color: #39414c; }
+.btn svg { width: 17px; height: 17px; fill: currentColor; }
+
+footer { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 48px 0 56px; color: var(--faint); font-size: 13px; }
+footer a { color: var(--muted); text-decoration: none; }
+
+@media (max-width: 760px) {
+  .wrap { padding: 0 16px; }
+  .hero { padding-top: 64px; }
+  nav .links a.hide { display: none; }
+  .grid, .stats { grid-template-columns: 1fr; }
+  .stats { gap: 32px; }
+  section { padding-top: 88px; }
+  .install { flex-direction: column; align-items: stretch; padding: 12px; }
+  .install button { margin: 8px 0 0; }
+  .cta { padding: 44px 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lines div { animation: none; opacity: 1; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="logo" href="#"><i></i>3assas</a>
+    <div class="links">
+      <a class="hide" href="#how">How it works</a>
+      <a class="hide" href="#cost">Overhead</a>
+      <a href="https://github.com/onezdtr/3assas">GitHub</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="tag"><b>eBPF</b> open source · Linux</div>
+    <h1>See which program talks to <span>whom.</span></h1>
+    <p class="lead">3assas watches every outbound connection from inside the kernel, names it, and tells you when something new phones home.</p>
+
+    <div class="install">
+      <code><span>$ </span>curl -fsSL https://raw.githubusercontent.com/onezdtr/3assas/main/get.sh | sudo sh</code>
+      <button type="button" data-copy>Copy</button>
+    </div>
+    <p class="meta">x86_64 · aarch64 · Linux 5.11+ with BTF · <a href="https://github.com/onezdtr/3assas/blob/main/LICENSE">GPL-2.0</a></p>
+
+    <div class="term" aria-label="Example output of 3assas">
+      <div class="bar"><i></i><i></i><i></i><span>sudo 3assas</span></div>
+      <div class="lines" id="lines"></div>
+    </div>
+  </header>
+
+  <section id="how">
+    <div class="eyebrow">How it works</div>
+    <h2>Nothing leaves without being seen.</h2>
+    <p class="sub">Firewalls and DNS blockers see addresses or names. 3assas sees the program behind each one, because it asks the kernel, not the network.</p>
+    <div class="grid">
+      <div class="cell">
+        <svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9 9h6v6H9zM9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 15h3M1 9h3M1 15h3"/></svg>
+        <h3>From inside the kernel</h3>
+        <p>eBPF hooks on TCP state changes and UDP sends catch every connection with its executable, even hardcoded IPs, QUIC and apps that skip your resolver.</p>
+      </div>
+      <div class="cell">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+        <h3>Names, owners, countries</h3>
+        <p>DNS answers are read as they arrive, so <code>140.82.112.5</code> becomes <code>api.github.com</code>, GitHub Inc., US. Bytes sent and received, exact.</p>
+      </div>
+      <div class="cell">
+        <svg viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.4-3 8-7 9-4-1-7-4.6-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
+        <h3>An agent that knows normal</h3>
+        <p>It learns your machine for a day, then flags a program's first connection, a new country or a big upload. An AI judges each one; Telegram gets what matters.</p>
+      </div>
+    </div>
+    <div class="shot"><img src="demo.gif" width="1200" height="760" alt="The 3assas web page: programs and their destinations, alerts judged by the agent, and a live feed of connections" loading="lazy"></div>
+    <p class="caption">The local web page on 127.0.0.1:4545. Demo data: a hidden binary uploading to an unknown host gets flagged, a browser reaching a new CDN does not.</p>
+  </section>
+
+  <section id="cost">
+    <div class="eyebrow">Overhead</div>
+    <h2>Measured, not promised.</h2>
+    <p class="sub">Loopback workloads with the tracer stopped and running, alternated every round, median of seven. Apple M1, Linux 7.1. The script ships with the code.</p>
+    <div class="stats">
+      <div class="stat"><b>0 %</b><span>slower to open and close a TCP connection</span></div>
+      <div class="stat"><b>44 ns</b><span>kernel time per received packet to catch DNS answers</span></div>
+      <div class="stat"><b>0.26 µs</b><span>added per UDP send, the only cost a benchmark can see</span></div>
+    </div>
+  </section>
+
+  <div class="cta">
+    <h2>Watch your machine in one line.</h2>
+    <p class="sub" style="margin:0 auto">Installs two services and a page on 127.0.0.1. Your connection history never leaves the machine.</p>
+    <div class="install">
+      <code><span>$ </span>curl -fsSL https://raw.githubusercontent.com/onezdtr/3assas/main/get.sh | sudo sh</code>
+      <button type="button" data-copy>Copy</button>
+    </div>
+    <div class="row">
+      <a class="btn" href="https://github.com/onezdtr/3assas"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>Source on GitHub</a>
+      <a class="btn" href="https://github.com/onezdtr/3assas#build-from-source">Build from source</a>
+    </div>
+  </div>
+
+  <footer>
+    <span>3assas means “the guard” in Darija. Open source under GPL-2.0.</span>
+    <span><a href="https://github.com/onezdtr/3assas/releases">Releases</a> · <a href="https://github.com/onezdtr/3assas/issues">Issues</a></span>
+  </footer>
+</div>
+
+<script>
+// Example session, replayed in a loop. Data is illustrative.
+const LINES = [
+  ["21:41:09", "→", "c", "TCP", "curl     ", "140.82.112.5:443       ", "api.github.com · GitHub, Inc. · US"],
+  ["21:41:09", "✓", "ok", "TCP", "curl     ", "140.82.112.5:443       ", "0.2s  ↑1.9 kB  ↓548.2 kB"],
+  ["21:41:10", "↗", "c", "UDP", "brave    ", "142.250.179.78:443     ", "www.youtube.com · Google LLC · US"],
+  ["21:41:12", "→", "c", "TCP", "python3  ", "149.154.167.220:443    ", "api.telegram.org · Telegram · GB"],
+  ["21:41:15", "✗", "bad", "TCP", "updater  ", "45.142.212.61:8443     ", "no answer after 2.0s"],
+  ["21:41:16", "→", "c", "TCP", ".cache/x ", "185.220.101.4:443      ", "first time on the network · RU"],
+];
+const box = document.getElementById("lines");
+function row([t, sign, cls, proto, prog, dest, what], i) {
+  const d = document.createElement("div");
+  d.style.animationDelay = i * 0.55 + "s";
+  const span = (c, s) => Object.assign(document.createElement("span"), { className: c, textContent: s });
+  d.append(span("t", t + "  "), span(cls, sign + " " + proto + "  "), prog + dest, span(cls === "bad" ? "bad" : "m", what));
+  return d;
+}
+function play() {
+  box.replaceChildren(...LINES.map(row));
+}
+play();
+if (!matchMedia("(prefers-reduced-motion: reduce)").matches) setInterval(play, LINES.length * 550 + 6000);
+
+document.querySelectorAll("[data-copy]").forEach(b => b.addEventListener("click", async () => {
+  const text = b.previousElementSibling.textContent.replace(/^\$ /, "");
+  try { await navigator.clipboard.writeText(text); b.textContent = "Copied"; }
+  catch { b.textContent = "Select it"; }
+  setTimeout(() => (b.textContent = "Copy"), 1600);
+}));
+</script>
+</body>
+</html>
