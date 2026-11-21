@@ -24,7 +24,8 @@ curl -fsSL -o "$TMP/$NAME.tar.gz.sha256" "$URL/$NAME.tar.gz.sha256"
 
 # Swap in the new version whole: the agent never runs from a half-extracted tree.
 mkdir "$TMP/new"
-tar xzf "$TMP/$NAME.tar.gz" -C "$TMP/new" --strip-components=1
+# Owned by root whatever uid built the archive: a local user with that uid must not edit what root and the agent run.
+tar xzf "$TMP/$NAME.tar.gz" -C "$TMP/new" --strip-components=1 --no-same-owner
 rm -rf "$DEST.old"
 [ -d "$DEST" ] && mv "$DEST" "$DEST.old"
 mv "$TMP/new" "$DEST"
