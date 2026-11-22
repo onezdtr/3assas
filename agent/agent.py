@@ -350,6 +350,8 @@ def ship(ev, ag, post=None):
         sent += len(rows)
         if len(rows) < SHIP_BATCH:
             break
+    if not sent:  # heartbeat: a quiet server must not look like a dead one on the dashboard
+        post({"host": socket.gethostname(), "events": []})
     return sent
 
 

@@ -36,7 +36,9 @@ class Ship(unittest.TestCase):
         self.assertEqual(got, list(range(1000)))  # 1st batch acknowledged, 2nd failed
         self.assertEqual(agent.ship(ev, ag, post), 1500)  # retry: nothing lost, nothing twice
         self.assertEqual(got, list(range(2500)))
-        self.assertEqual(agent.ship(ev, ag, post), 0)
+        n = calls[0]
+        self.assertEqual(agent.ship(ev, ag, post), 0)  # nothing new: one empty post, the heartbeat
+        self.assertEqual((calls[0], got[-1]), (n + 1, 2499))
 
 
 class Ingest(unittest.TestCase):

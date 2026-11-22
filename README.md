@@ -142,7 +142,8 @@ everything; there is just no AI verdict or Telegram message. `ASSAS_LANG` sets t
 Several servers: put a central dashboard's address on the first line of `~/.config/3assas/ship` and this server's key
 on the second. Every 30 s the agent POSTs new events to `<address>/v1/events` (`Authorization: Bearer <key>`, body
 `{"host": ..., "events": [...]}`, 1000 per request). Its cursor moves only on a 2xx answer: while the dashboard is
-down, events wait in the local database and are sent later, none twice.
+down, events wait in the local database and are sent later, none twice. With nothing new, it sends an empty batch:
+a heartbeat, so the dashboard can tell a quiet server from a dead one.
 
 ## Tests
 
