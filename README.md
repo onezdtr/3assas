@@ -86,7 +86,9 @@ Design choices:
 - **The observer reports its blind spots.** A per-CPU counter tracks events lost to a full ring buffer or map, and the
   summary says so.
 
-Userspace (Rust, libbpf-rs) resolves `/proc/<pid>/exe`, labels IPs with their network owner
+Userspace (Rust, libbpf-rs) resolves `/proc/<pid>/exe` and the container the process runs in (id from
+`/proc/<pid>/cgroup` for Docker, Podman, containerd and CRI-O; name from Docker's or rootful Podman's files, else the
+short id), labels IPs with their network owner
 ([iptoasn](https://iptoasn.com), PDDL) and country ([DB-IP Lite](https://db-ip.com), CC BY 4.0) through binary search on
 in-memory range tables, and prints a line per event or JSON lines (`--json`). Ctrl-C prints a per-program summary.
 
@@ -136,6 +138,11 @@ sudo ./install.sh     # builds, installs and starts both services at boot
 Optional agent config, in `~/.config/3assas/` (mode 600): `gemini` (API key, free tier is enough; or `GEMINI_API_KEY`),
 `telegram` (bot token) and `telegram_chat` (chat id). Without them the agent still flags, and the page still shows
 everything; there is just no AI verdict or Telegram message. `ASSAS_LANG` sets the language of verdicts and reports.
+
+Several servers: put a central dashboard's address on the first line of `~/.config/3assas/ship` and this server's key
+on the second. Every 30 s the agent POSTs new events to `<address>/v1/events` (`Authorization: Bearer <key>`, body
+`{"host": ..., "events": [...]}`, 1000 per request). Its cursor moves only on a 2xx answer: while the dashboard is
+down, events wait in the local database and are sent later, none twice.
 
 ## Tests
 

@@ -1,6 +1,7 @@
 """3assas agent: runs 24/7 next to the tracer.
 
-Config (optional): ~/.config/3assas/gemini (API key), telegram + telegram_chat (bot token, chat id).
+Config (optional): ~/.config/3assas/gemini (API key), telegram + telegram_chat (bot token, chat id),
+ship (central dashboard: its URL on line 1, this server's key on line 2).
 The bot must be dedicated to 3assas: the agent reads its updates for the Block buttons.
 
 Every 30 s it reads the new events (read-only), flags what is new for each program (first time on the network,
@@ -318,6 +319,47 @@ def report(ev, ag, now):
     return text
 
 
+SHIP_COLS = ("t", "kind", "proto", "pid", "uid", "comm", "exe", "ip", "port", "owner", "country",
+             "sent", "recv", "duration_ms", "failed", "domain", "container")
+SHIP_BATCH = 1000
+
+
+def ship(ev, ag, post=None):
+    """Send events past the ship cursor to the central dashboard; the cursor moves only on a 2xx reply.
+
+    The tracer database is the buffer: while the dashboard is down, events wait there (as long as its retention)."""
+    conf = CONF / "ship"
+    if not conf.exists() and post is None:
+        return 0
+    if post is None:
+        url, key = conf.read_text().split()[:2]
+        post = lambda body: _post(url, key, body)
+    cursor = meta(ag, "ship_cursor", 0)
+    if cursor > ev.execute("SELECT COALESCE(MAX(rowid), 0) FROM events").fetchone()[0]:
+        cursor = 0  # the tracer database was recreated
+    sent = 0
+    while True:
+        rows = ev.execute(f"SELECT rowid, {', '.join(SHIP_COLS)} FROM events WHERE rowid > ? ORDER BY rowid LIMIT ?",
+                          (cursor, SHIP_BATCH)).fetchall()
+        if not rows:
+            break
+        post({"host": socket.gethostname(), "events": [dict(zip(SHIP_COLS, r[1:])) for r in rows]})
+        cursor = rows[-1][0]
+        set_meta(ag, "ship_cursor", cursor)
+        ag.commit()
+        sent += len(rows)
+        if len(rows) < SHIP_BATCH:
+            break
+    return sent
+
+
+def _post(url, key, body):
+    req = urllib.request.Request(url.rstrip("/") + "/v1/events", json.dumps(body).encode(),
+                                 {"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    with urllib.request.urlopen(req, timeout=15):  # raises on non-2xx: the cursor stays
+        pass
+
+
 def cycle(ag, now):
     if not DB.exists():
         return
@@ -330,6 +372,10 @@ def cycle(ag, now):
             except (OSError, ValueError, KeyError, IndexError) as e:
                 print("AI judge failed, alerts sent unjudged:", e, flush=True)
         notify(ag)
+        try:
+            ship(ev, ag)
+        except (OSError, ValueError) as e:  # dashboard down or misconfigured: retry next cycle
+            print("ship failed, will retry:", e, flush=True)
         today = time.strftime("%Y-%m-%d")
         if time.localtime().tm_hour >= REPORT_HOUR and meta(ag, "report_day") != today:
             set_meta(ag, "report_day", today)

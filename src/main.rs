@@ -1,3 +1,4 @@
+mod container;
 mod control;
 mod dns;
 mod event;
@@ -131,22 +132,22 @@ fn clock() -> String {
     format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
-/// Executable behind a pid. Cached so close events still resolve after the process exits.
-struct Exes(HashMap<(u32, String), String>);
+/// Executable and container behind a pid. Cached so close events still resolve after the process exits.
+struct Exes(HashMap<(u32, String), (String, Option<String>)>);
 
 impl Exes {
-    fn get(&mut self, tgid: u32, comm: &str) -> String {
+    fn get(&mut self, tgid: u32, comm: &str) -> (String, Option<String>) {
         if let Some(p) = self.0.get(&(tgid, comm.to_owned())) {
             return p.clone();
         }
         let Ok(p) = std::fs::read_link(format!("/proc/{tgid}/exe")) else {
-            return format!("[{comm}]");
+            return (format!("[{comm}]"), None);
         };
         // shortcut: wholesale reset bounds memory but drops warm entries, switch to an LRU if it shows up in profiles
         if self.0.len() > 4096 {
             self.0.clear();
         }
-        let p = p.to_string_lossy().into_owned();
+        let p = (p.to_string_lossy().into_owned(), container::of(tgid));
         self.0.insert((tgid, comm.to_owned()), p.clone());
         p
     }
@@ -343,7 +344,7 @@ fn main() -> Result<()> {
                 continue;
             }
             let comm = e.comm();
-            let exe = exes.get(e.tgid, &comm);
+            let (exe, container) = exes.get(e.tgid, &comm);
             let (owner, cc) = if blocked {
                 (None, None)
             } else if is_local(ip) {
@@ -376,6 +377,7 @@ fn main() -> Result<()> {
                 duration_ms: e.duration_ns / 1_000_000,
                 failed: e.failed(),
                 domain,
+                container,
             };
 
             if store.is_some() {
@@ -396,7 +398,7 @@ fn main() -> Result<()> {
                     "time_ms": r.t_ms, "event": r.kind, "proto": r.proto, "pid": r.pid, "uid": r.uid,
                     "comm": r.comm, "exe": r.exe, "ip": r.ip, "port": r.port, "domain": r.domain, "owner": r.owner,
                     "country": r.country, "bytes_sent": r.sent, "bytes_recv": r.recv,
-                    "duration_ms": r.duration_ms, "failed": r.failed,
+                    "duration_ms": r.duration_ms, "failed": r.failed, "container": r.container,
                 });
                 println!("{v}");
                 continue;
@@ -508,7 +510,7 @@ mod tests {
         db.insert(&[store::Row {
             t_ms: 1, kind: "connect", proto: "TCP", pid: 1, uid: 1000, comm: "upd".into(),
             exe: "/home/me/.cache/x/upd".into(), ip: "1.2.3.4".into(), port: 443, owner: None,
-            country: None, sent: 0, recv: 0, duration_ms: 0, failed: false, domain: None,
+            country: None, sent: 0, recv: 0, duration_ms: 0, failed: false, domain: None, container: None,
         }])
         .unwrap();
         let file = std::env::temp_dir().join(format!("3assas-policy-{}", std::process::id()));

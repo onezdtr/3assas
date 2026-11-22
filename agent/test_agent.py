@@ -9,13 +9,34 @@ DAY = 86400 * 1000
 def events():
     db = sqlite3.connect(":memory:")
     db.execute("""CREATE TABLE events(t, kind, proto, pid, uid, comm, exe, ip, port, owner, country,
-                                      sent, recv, duration_ms, failed, domain)""")
+                                      sent, recv, duration_ms, failed, domain, container)""")
     return db
 
 
 def add(db, t, exe, country="US", kind="connect", sent=0):
-    db.execute("INSERT INTO events VALUES (?, ?, 'TCP', 1, 0, 'x', ?, '1.2.3.4', 443, 'ACME', ?, ?, 0, 0, 0, 'acme.example')",
+    db.execute("INSERT INTO events VALUES (?, ?, 'TCP', 1, 0, 'x', ?, '1.2.3.4', 443, 'ACME', ?, ?, 0, 0, 0, 'acme.example', NULL)",
                (t, kind, exe, country, sent))
+
+
+class Ship(unittest.TestCase):
+    def test_sends_in_order_and_resumes_after_a_failure(self):
+        ev, ag = events(), agent.open_agent(":memory:")
+        for t in range(2500):
+            add(ev, t, "/usr/bin/curl")
+        got, calls = [], [0]
+
+        def post(body):
+            calls[0] += 1
+            if calls[0] == 2:
+                raise OSError("dashboard down")
+            got.extend(e["t"] for e in body["events"])
+
+        with self.assertRaises(OSError):
+            agent.ship(ev, ag, post)
+        self.assertEqual(got, list(range(1000)))  # 1st batch acknowledged, 2nd failed
+        self.assertEqual(agent.ship(ev, ag, post), 1500)  # retry: nothing lost, nothing twice
+        self.assertEqual(got, list(range(2500)))
+        self.assertEqual(agent.ship(ev, ag, post), 0)
 
 
 class Ingest(unittest.TestCase):
